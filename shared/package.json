@@ -1,0 +1,4 @@
+{
+  "//": "仅用于让 Node 把本目录下的 .js 当作 ES Module 解析，从而支持 node 单元测试直接 import。浏览器不受影响（按 <script type=\"module\"> 加载，忽略此文件）。",
+  "type": "module"
+}

@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M1 引擎验证 · 运动姿态识别</title>
+<!-- 必须在任何模块之前：拦住 MediaPipe 内置的境外使用统计上报 -->
+<script src="shared/offline-guard.js"></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><circle cx='16' cy='8.5' r='3.2' fill='%23fff'/><path d='M16 12.5v8.5M16 15l-5.5 3.5M16 15l5.5 3.5M16 21l-4.5 6.5M16 21l4.5 6.5' stroke='%23fff' stroke-width='2.1' stroke-linecap='round' fill='none'/></svg>">
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e2e5ea;
+    --text: #17191d;
+    --muted: #6b7280;
+    --faint: #9aa1ab;
+    --primary: #2563eb;
+    --good: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 16px 18px 40px; }
+
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 999px; font-size: 12.5px; font-weight: 500;
+    background: #eef2ff; color: #3730a3; border: 1px solid #dfe4ff;
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .badge.st-running { background: #e8f7ee; color: #15803d; border-color: #cdeedb; }
+  .badge.st-loading { background: #fff7e6; color: #b45309; border-color: #fbe3b8; }
+  .badge.st-error   { background: #fdecec; color: #b91c1c; border-color: #f8d4d4; }
+  .spacer { flex: 1; }
+
+  button {
+    font: inherit; font-size: 13.5px; padding: 7px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: #fff; color: var(--text); cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { background: #f3f4f6; border-color: #cfd4db; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 500; }
+  button.primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+  button.danger { background: #fff; border-color: #f3c7c7; color: var(--bad); }
+
+  .layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(340px, .6fr); gap: 14px; align-items: start; }
+  @media (max-width: 1040px) { .layout { grid-template-columns: 1fr; } }
+
+  .stage { position: relative; aspect-ratio: 16/9; background: #0b1220; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+  .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .stage video { object-fit: contain; }
+  .stage.mirrored video { transform: scaleX(-1); }
+  .stage canvas { pointer-events: none; }
+  .stage .hint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #93a3b8; font-size: 13.5px; text-align: center; padding: 0 24px; line-height: 1.7;
+  }
+  .stage .hint b { color: #cbd8e8; font-weight: 500; }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .panel h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--muted); letter-spacing: .04em; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); white-space: nowrap; }
+  .kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; text-align: right; }
+  .kv dd.ok { color: var(--good); }
+  .kv dd.warn { color: var(--warn); }
+  .kv dd.bad { color: var(--bad); }
+
+  .angles { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .angles th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 3px 0; }
+  .angles th:nth-child(2), .angles th:nth-child(3) { text-align: right; }
+  .angles td { padding: 3px 0; border-top: 1px solid #f1f3f5; }
+  .angles td:nth-child(2), .angles td:nth-child(3) { text-align: right; font-family: var(--mono); font-size: 12.5px; }
+  .angles .grp { color: var(--faint); font-size: 11.5px; padding-top: 8px; letter-spacing: .05em; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; }
+  .field { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+  .field select, .field input[type=number] {
+    font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 7px;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+  }
+  .field input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--primary); }
+  .field input[type=range] { width: 110px; accent-color: var(--primary); }
+  .field .val { font-family: var(--mono); font-size: 12px; min-width: 34px; color: var(--text); }
+  .sep { width: 1px; height: 20px; background: var(--border); }
+
+  .warnrow {
+    display: none; margin-top: 10px; padding: 9px 12px; border-radius: 8px;
+    background: #fff7e6; border: 1px solid #fbe3b8; color: #92400e; font-size: 13px;
+  }
+  .warnrow.show { display: block; }
+  .warnrow.err { background: #fdecec; border-color: #f8d4d4; color: #991b1b; }
+  details { margin-top: 10px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  details pre { font-family: var(--mono); font-size: 11.5px; background: #f8f9fb; border: 1px solid var(--border); border-radius: 8px; padding: 9px; margin: 8px 0 0; overflow: auto; max-height: 210px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a href="../index.html" title="返回首页" style="text-decoration:none;color:#5b6472;font-size:13px;margin-right:2px">← 首页</a>
+    <h1>M1 引擎验证</h1>
+    <span class="badge" id="stateBadge"><span class="dot"></span><span id="stateText">未启动</span></span>
+    <span class="sub" id="engineInfo">引擎未加载</span>
+    <span class="spacer"></span>
+    <button class="primary" id="btnStart">启动摄像头</button>
+    <button id="btnStop" disabled>停止</button>
+  </header>
+
+  <div class="layout">
+    <div>
+      <div class="stage" id="stage">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="hint" id="stageHint">
+          这一步只验证引擎：骨架是否贴合、角度是否合理、人体尺度是否等于真实米数。<br>
+          点击右上角 <b>启动摄像头</b> 开始。建议站在画面中，全身入镜。
+        </div>
+      </div>
+      <div class="warnrow" id="warnRow"></div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>控制</h2>
+        <div class="controls">
+          <div class="field">模型
+            <select id="selModel">
+              <option value="full" selected>Full · 9.0MB（单人准）</option>
+              <option value="lite">Lite · 5.5MB（快，多人用）</option>
+            </select>
+          </div>
+          <div class="field">推理帧率上限
+            <select id="selFps">
+              <option value="15">15</option>
+              <option value="24">24</option>
+              <option value="30" selected>30</option>
+              <option value="60">60</option>
+            </select>
+          </div>
+          <div class="field">后端
+            <select id="selDelegate">
+              <option value="auto" selected>自动（GPU 优先）</option>
+              <option value="GPU">强制 GPU</option>
+              <option value="CPU">强制 CPU</option>
+            </select>
+          </div>
+          <span class="sep"></span>
+          <label class="field"><input type="checkbox" id="ckMirror" checked>镜像画面</label>
+          <label class="field"><input type="checkbox" id="ckPoints" checked>关键点</label>
+          <label class="field"><input type="checkbox" id="ckAngles" checked>角度标注</label>
+          <label class="field"><input type="checkbox" id="ckIndex">点编号</label>
+          <label class="field"><input type="checkbox" id="ckLabels">点名称</label>
+          <span class="sep"></span>
+          <label class="field"><input type="checkbox" id="ckSmooth" checked>关键点平滑</label>
+          <div class="field">静止截止
+            <input type="range" id="rgMinCut" min="0.2" max="4" step="0.1" value="1.0">
+            <span class="val" id="vMinCut">1.0</span>
+          </div>
+          <div class="field">速度耦合
+            <input type="range" id="rgBeta" min="0.2" max="24" step="0.2" value="8.0">
+            <span class="val" id="vBeta">8.0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>引擎</h2>
+        <dl class="kv">
+          <dt>状态</dt><dd id="kState">—</dd>
+          <dt>模型 / 后端</dt><dd id="kModel">—</dd>
+          <dt>姿态检测</dt><dd id="kDetect">—</dd>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <h2>性能</h2>
+        <dl class="kv">
+          <dt>推理帧率</dt><dd id="kFps">—</dd>
+          <dt>推理耗时（均值）</dt><dd id="kInfMean">—</dd>
+          <dt>推理耗时（P95）</dt><dd id="kInfP95">—</dd>
+          <dt>累计帧 / 抽帧跳过</dt><dd id="kFrames">—</dd>
+          <dt>异常次数</dt><dd id="kErrs">—</dd>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <h2>人体尺度（世界坐标，单位米）</h2>
+        <dl class="kv">
+          <dt>肩宽 <span class="sub">0.35–0.50</span></dt><dd id="kSW">—</dd>
+          <dt>躯干长 <span class="sub">0.45–0.65</span></dt><dd id="kTL">—</dd>
+          <dt>髋宽 <span class="sub">0.25–0.40</span></dt><dd id="kHW">—</dd>
+          <dt>腿长 <span class="sub">0.70–1.00</span></dt><dd id="kLeg">—</dd>
+        </dl>
+        <div class="sub" style="margin-top:8px;font-size:12px;line-height:1.5">
+          数值落在参考区间内，说明世界坐标可用——这是后续所有"与身高无关的阈值"能成立的前提。
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>实时指标</h2>
+        <dl class="kv">
+          <dt>躯干相对垂直</dt><dd id="kTorso">—</dd>
+          <dt>踝距 / 髋宽</dt><dd id="kAnkleRatio">—</dd>
+          <dt>有效关键点</dt><dd id="kVisCount">—</dd>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <h2>关节角度</h2>
+        <table class="angles">
+          <thead>
+            <tr><th>关节</th><th>图像坐标</th><th>世界坐标</th></tr>
+          </thead>
+          <tbody id="angleBody">
+            <tr><td colspan="3" class="grp">等待检测到人体…</td></tr>
+          </tbody>
+        </table>
+        <div class="sub" style="margin-top:9px;font-size:12px;line-height:1.5">
+          两列都算一遍，是为了分辨误差来自关键点本身还是透视。
+          若两列偏差大，说明该动作不适合当前机位。
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>坐标诊断</h2>
+        <details>
+          <summary>展开查看原始坐标（核对关键点索引与轴向用）</summary>
+          <pre id="rawDump">无数据</pre>
+        </details>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { PoseEngine, CameraSource, EngineState } from '/shared/tpc-core.js';
+import { LM, JOINT_GROUPS, jointVisibility } from '/shared/tpc-landmarks.js';
+import * as M from '/shared/tpc-math.js';
+import { drawPoses, resizeCanvas } from '/shared/tpc-draw.js';
+
+const $ = (id) => document.getElementById(id);
+const video = $('video');
+const canvas = $('overlay');
+const ctx = canvas.getContext('2d');
+const stage = $('stage');
+
+let camera = null;
+let engine = null;
+let running = false;
+let lastPanelUpdate = 0;
+let lastDumpUpdate = 0;
+let latestPoses = [];
+let latestLayout = null;
+
+/** 要显示在画面上的角度标注（保持精简，太多反而看不清） */
+const ONSCREEN_JOINTS = [
+  { a: LM.LEFT_ELBOW, b: LM.LEFT_WRIST, c: null, kind: 'elbowL' },
+];
+
+const ANGLE_DEFS = [
+  { id: 'elbowL', group: '上肢', label: '左肘', a: LM.LEFT_SHOULDER, b: LM.LEFT_ELBOW, c: LM.LEFT_WRIST },
+  { id: 'elbowR', group: '上肢', label: '右肘', a: LM.RIGHT_SHOULDER, b: LM.RIGHT_ELBOW, c: LM.RIGHT_WRIST },
+  { id: 'shoulderL', group: '上肢', label: '左肩外展', a: LM.LEFT_ELBOW, b: LM.LEFT_SHOULDER, c: LM.LEFT_HIP },
+  { id: 'shoulderR', group: '上肢', label: '右肩外展', a: LM.RIGHT_ELBOW, b: LM.RIGHT_SHOULDER, c: LM.RIGHT_HIP },
+  { id: 'kneeL', group: '下肢', label: '左膝', a: LM.LEFT_HIP, b: LM.LEFT_KNEE, c: LM.LEFT_ANKLE },
+  { id: 'kneeR', group: '下肢', label: '右膝', a: LM.RIGHT_HIP, b: LM.RIGHT_KNEE, c: LM.RIGHT_ANKLE },
+  { id: 'hipL', group: '下肢', label: '左髋', a: LM.LEFT_SHOULDER, b: LM.LEFT_HIP, c: LM.LEFT_KNEE },
+  { id: 'hipR', group: '下肢', label: '右髋', a: LM.RIGHT_SHOULDER, b: LM.RIGHT_HIP, c: LM.RIGHT_KNEE },
+];
+
+const fmt = (v, d) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);
+
+function setBadge(cls, text) {
+  const b = $('stateBadge');
+  b.className = 'badge' + (cls ? ' ' + cls : '');
+  $('stateText').textContent = text;
+}
+
+function showWarn(msg, isErr) {
+  const el = $('warnRow');
+  if (!msg) { el.classList.remove('show'); return; }
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+  el.classList.add('show');
+}
+
+function buildEngine() {
+  if (engine) engine.close();
+  engine = new PoseEngine({
+    vendorBase: '/vendor/',
+    model: $('selModel').value,
+    numPoses: 1,
+    delegate: $('selDelegate').value,
+    targetFps: Number($('selFps').value),
+    smoothing: $('ckSmooth').checked,
+    onFrame: onFrame,
+    onState: (s) => {
+      const map = {
+        [EngineState.IDLE]: ['', '未启动'],
+        [EngineState.LOADING]: ['st-loading', '加载引擎中…'],
+        [EngineState.READY]: ['', '引擎就绪'],
+        [EngineState.RUNNING]: ['st-running', '运行中'],
+        [EngineState.ERROR]: ['st-error', '引擎出错'],
+      };
+      const m = map[s] || ['', s];
+      setBadge(m[0], m[1]);
+      $('kState').textContent = s;
+    },
+    onError: (err) => {
+      showWarn('引擎错误：' + (err && err.message ? err.message : String(err)), true);
+    },
+  });
+  return engine;
+}
+
+function syncFilterParams() {
+  if (!engine) return;
+  engine.filter.cfg.enabled = $('ckSmooth').checked;
+  engine.filter.cfg.image.minCutoff = Number($('rgMinCut').value);
+  engine.filter.cfg.image.beta = Number($('rgBeta').value);
+  // 世界坐标数值量级小一个数量级，beta 按比例缩放，避免共用一套参数导致其中一路失准
+  engine.filter.cfg.world.minCutoff = Number($('rgMinCut').value);
+  engine.filter.cfg.world.beta = Number($('rgBeta').value) / 13;
+}
+
+async function start() {
+  try {
+    $('btnStart').disabled = true;
+    showWarn('');
+    engine = buildEngine();
+    await engine.load();
+    $('engineInfo').textContent = `${$('selModel').value} · ${engine.delegateInUse}`;
+
+    camera = new CameraSource(video);
+    const info = await camera.start();
+    $('stageHint').style.display = 'none';
+    $('kDetect').textContent = `${info.width}×${info.height}`;
+    $('kModel').textContent = `${$('selModel').value} / ${engine.delegateInUse}`;
+
+    syncFilterParams();
+    engine.start(video);
+    running = true;
+    $('btnStop').disabled = false;
+
+    const v = info.track.getSettings ? info.track.getSettings() : {};
+    if (v.width && v.width < 640) {
+      showWarn('摄像头分辨率偏低（' + v.width + '×' + v.height + '），关键点精度会下降。');
+    }
+  } catch (err) {
+    $('btnStart').disabled = false;
+    const msg = (err && err.name === 'NotAllowedError')
+      ? '摄像头权限被拒绝。请在浏览器地址栏左侧的权限图标中允许摄像头，然后重试。'
+      : (err && err.message ? err.message : String(err));
+    showWarn(msg, true);
+    setBadge('st-error', '启动失败');
+  }
+}
+
+function stop() {
+  if (engine) engine.stop();
+  if (camera) camera.stop();
+  running = false;
+  $('btnStart').disabled = false;
+  $('btnStop').disabled = true;
+  $('stageHint').style.display = '';
+  setBadge('', '已停止');
+}
+
+function onFrame({ poses, timestampMs }) {
+  latestPoses = poses;
+  const v = video;
+  latestLayout = resizeCanvas(canvas, v);
+
+  const pose = poses && poses[0];
+  let onscreenAngles = [];
+
+  if (pose && pose.landmarks && pose.landmarks.length) {
+    const imgLm = pose.landmarks;
+    const wldLm = pose.worldLandmarks;
+    const angs = [];
+    for (const d of ANGLE_DEFS) {
+      const imgVal = M.jointAngle(imgLm, d.a, d.b, d.c);
+      const wldVal = wldLm ? M.jointAngle(wldLm, d.a, d.b, d.c) : null;
+      angs.push({ def: d, img: imgVal, wld: wldVal, vis: jointVisibility(imgLm, d) });
+    }
+    window.__lastAngles = angs;
+
+    onscreenAngles = angs
+      .filter((a) => (a.def.id === 'elbowL' || a.def.id === 'elbowR' || a.def.id === 'kneeL' || a.def.id === 'kneeR'))
+      .filter((a) => a.vis >= 0.5)
+      .map((a) => ({ at: imgLm[a.def.b], value: a.img, label: a.def.label }));
+  }
+
+  drawPoses(ctx, poses, latestLayout, {
+    mirrored: $('ckMirror').checked,
+    minVisibility: 0.3,
+    showPoints: $('ckPoints').checked,
+    showAngles: $('ckAngles').checked,
+    showIndex: $('ckIndex').checked,
+    showLabels: $('ckLabels').checked,
+    angles: onscreenAngles,
+  });
+
+  const now = performance.now();
+  if (now - lastPanelUpdate > 140) {
+    lastPanelUpdate = now;
+    updatePanels(pose);
+  }
+  if (now - lastDumpUpdate > 700) {
+    lastDumpUpdate = now;
+    updateDump(pose);
+  }
+}
+
+function updatePanels(pose) {
+  const s = engine.stats;
+  $('kFps').textContent = s.fps.count ? s.fps.mean.toFixed(1) + ' fps' : '—';
+  $('kInfMean').textContent = s.inferenceMs.count ? s.inferenceMs.mean.toFixed(1) + ' ms' : '—';
+  const p95 = s.inferenceMs.p95;
+  const p95el = $('kInfP95');
+  p95el.textContent = s.inferenceMs.count ? p95.toFixed(1) + ' ms' : '—';
+  p95el.className = p95 > 66 ? 'bad' : p95 > 40 ? 'warn' : 'ok';
+  $('kFrames').textContent = s.totalFrames + ' / ' + s.droppedFrames;
+  const errEl = $('kErrs');
+  errEl.textContent = String(s.errorCount);
+  errEl.className = s.errorCount > 0 ? 'bad' : 'ok';
+
+  const body = $('angleBody');
+  if (!pose || !pose.landmarks || !pose.landmarks.length) {
+    body.innerHTML = '<tr><td colspan="3" class="grp">未检测到人体</td></tr>';
+    $('kSW').textContent = $('kTL').textContent = $('kHW').textContent = $('kLeg').textContent = '—';
+    $('kTorso').textContent = $('kAnkleRatio').textContent = $('kVisCount').textContent = '—';
+    return;
+  }
+
+  const imgLm = pose.landmarks;
+  const wldLm = pose.worldLandmarks || imgLm;
+
+  const metrics = M.bodyMetrics(wldLm);
+  const rangeClass = (v, lo, hi) => v == null ? '' : (v >= lo && v <= hi ? 'ok' : 'warn');
+  if (metrics) {
+    const sw = metrics.shoulderWidth, tl = metrics.torsoLength, hw = metrics.hipWidth;
+    const leg = (metrics.legL + metrics.legR) / 2;
+    $('kSW').textContent = fmt(sw, 3) + ' m';
+    $('kSW').className = rangeClass(sw, 0.30, 0.52);
+    $('kTL').textContent = fmt(tl, 3) + ' m';
+    $('kTL').className = rangeClass(tl, 0.42, 0.68);
+    $('kHW').textContent = fmt(hw, 3) + ' m';
+    $('kHW').className = rangeClass(hw, 0.22, 0.42);
+    $('kLeg').textContent = fmt(leg, 3) + ' m';
+    $('kLeg').className = rangeClass(leg, 0.65, 1.05);
+  } else {
+    $('kSW').textContent = $('kTL').textContent = $('kHW').textContent = $('kLeg').textContent = '—';
+  }
+
+  const torso = M.torsoInclination(wldLm);
+  $('kTorso').textContent = torso == null ? '—' : torso.toFixed(1) + '°';
+
+  let ar = '—';
+  if (wldLm[LM.LEFT_ANKLE] && wldLm[LM.RIGHT_ANKLE] && metrics && metrics.hipWidth > 1e-6) {
+    ar = (M.distance(wldLm[LM.LEFT_ANKLE], wldLm[LM.RIGHT_ANKLE]) / metrics.hipWidth).toFixed(2);
+  }
+  $('kAnkleRatio').textContent = ar;
+
+  const vc = M.countVisible(imgLm, 0.5);
+  const vcEl = $('kVisCount');
+  vcEl.textContent = vc + ' / 33';
+  vcEl.className = vc >= 28 ? 'ok' : vc >= 20 ? 'warn' : 'bad';
+
+  const angs = window.__lastAngles || [];
+  let html = '';
+  let lastGroup = '';
+  for (const a of angs) {
+    if (a.def.group !== lastGroup) {
+      html += `<tr><td colspan="3" class="grp">${a.def.group}</td></tr>`;
+      lastGroup = a.def.group;
+    }
+    const lowVis = a.vis < 0.5;
+    html += `<tr><td>${a.def.label}${lowVis ? ' <span style="color:#dc2626;font-size:11px">遮挡</span>' : ''}</td>`
+      + `<td>${a.img == null ? '—' : Math.round(a.img) + '°'}</td>`
+      + `<td>${a.wld == null ? '—' : Math.round(a.wld) + '°'}</td></tr>`;
+  }
+  body.innerHTML = html || '<tr><td colspan="3" class="grp">未检测到人体</td></tr>';
+}
+
+function updateDump(pose) {
+  if (!pose || !pose.landmarks || !pose.landmarks.length) {
+    $('rawDump').textContent = '无数据';
+    return;
+  }
+  const imgLm = pose.landmarks;
+  const wld = pose.worldLandmarks;
+  const idx = [0, 11, 12, 15, 16, 23, 24, 25, 26, 27, 28];
+  const names = ['鼻', '左肩', '右肩', '左腕', '右腕', '左髋', '右髋', '左膝', '右膝', '左踝', '右踝'];
+  const pad = (s, n) => String(s).padEnd(n, ' ');
+  let out = pad('部位', 8) + pad('图 x', 9) + pad('图 y', 9) + pad('可见度', 9)
+    + pad('世 x(m)', 10) + pad('世 y(m)', 10) + pad('世 z(m)', 10) + '\n';
+  out += '-'.repeat(74) + '\n';
+  idx.forEach((i, k) => {
+    const p = imgLm[i] || {};
+    const q = (wld && wld[i]) || {};
+    out += pad(names[k], 8)
+      + pad(fmt(p.x, 4), 9) + pad(fmt(p.y, 4), 9) + pad(fmt(p.visibility, 3), 9)
+      + pad(fmt(q.x, 4), 10) + pad(fmt(q.y, 4), 10) + pad(fmt(q.z, 4), 10) + '\n';
+  });
+  const nose = wld && wld[0];
+  if (nose) {
+    out += '\n轴向提示：鼻腔世界 y = ' + fmt(nose.y, 4) + ' m（与髋中心原点的关系决定 y 轴朝向）\n';
+  }
+  $('rawDump').textContent = out;
+}
+
+// ---- 事件绑定 ----
+$('btnStart').addEventListener('click', start);
+$('btnStop').addEventListener('click', stop);
+$('ckMirror').addEventListener('change', (e) => stage.classList.toggle('mirrored', e.target.checked));
+stage.classList.add('mirrored');
+
+$('rgMinCut').addEventListener('input', (e) => { $('vMinCut').textContent = Number(e.target.value).toFixed(1); syncFilterParams(); });
+$('rgBeta').addEventListener('input', (e) => { $('vBeta').textContent = Number(e.target.value).toFixed(1); syncFilterParams(); });
+$('ckSmooth').addEventListener('change', syncFilterParams);
+
+$('selModel').addEventListener('change', async () => {
+  if (!running) return;
+  const wasRunning = running;
+  stop();
+  if (wasRunning) await start();
+});
+$('selDelegate').addEventListener('change', async () => {
+  if (!running) return;
+  stop();
+  await start();
+});
+$('selFps').addEventListener('change', () => {
+  if (engine) engine.opts.targetFps = Number($('selFps').value);
+});
+
+window.addEventListener('resize', () => {
+  if (video.videoWidth) latestLayout = resizeCanvas(canvas, video);
+});
+
+// 便于自动化测试读取内部状态
+window.__tpc = {
+  get engine() { return engine; },
+  get camera() { return camera; },
+  get running() { return running; },
+  get poses() { return latestPoses; },
+  start, stop,
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# 仓库内统一用 LF，检出也用 LF（源码本来就全是 LF）
+* text=auto eol=lf
+
+# 启动.bat 必须**字节精确**：CRLF + 纯 ASCII + 无 BOM。
+# 一旦被换成 LF，cmd 会把整份脚本当一行解析并直接报错，所以这里禁止任何转换。
+# 修改方式见 README：改 tools/write-bat.js 的行数组后重新生成，不要直接编辑 .bat。
+*.bat -text
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wasm binary
+*.task binary
+*.woff binary
+*.woff2 binary

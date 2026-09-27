@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>参数调试台 · 运动姿态识别</title>
+<!-- 必须在任何模块之前：拦住 MediaPipe 内置的境外使用统计上报 -->
+<script src="../shared/offline-guard.js"></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/></svg>">
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --line:#e5e7eb; --ink:#16181d; --ink2:#5b6472; --ink3:#8b94a3;
+    --brand:#2563eb; --brand-soft:#eff4ff;
+    --ok:#10b981; --warn:#f59e0b; --danger:#ef4444; --gray:#9ca3af;
+    --dead:#94a3b8;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  .bar{
+    flex:0 0 auto;display:flex;align-items:center;gap:14px;padding:10px 16px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;
+  }
+  .brand{font-weight:600;font-size:15px;white-space:nowrap}
+  .brand .sub{font-weight:400;color:var(--ink3);font-size:13px;margin-left:6px}
+  .ex-pick{display:flex;align-items:center;gap:7px;padding:4px 10px;border-radius:8px;background:var(--brand-soft);border:1px solid #dbe4ff}
+  .ex-pick label{font-size:11px;color:var(--brand);font-weight:600}
+  .ex-pick select{border:0;background:transparent;font-weight:650;font-size:14px;color:var(--ink);padding:2px 0}
+  .hud{display:flex;gap:8px;flex-wrap:wrap;flex:1}
+  .hud-item{
+    display:flex;align-items:baseline;gap:6px;padding:4px 10px;border-radius:8px;
+    background:#f2f4f8;border:1px solid var(--line);
+  }
+  .hud-item .k{font-size:11px;color:var(--ink3);white-space:nowrap}
+  .hud-item .v{font-weight:650;font-variant-numeric:tabular-nums;font-size:14px}
+  .hud-item.big .v{font-size:22px;color:var(--brand);line-height:1}
+  .hud-item.hold .v{color:#0f766e}
+  .actions{display:flex;gap:8px}
+  button{
+    font:inherit;font-size:13px;padding:6px 12px;border-radius:8px;cursor:pointer;
+    border:1px solid var(--line);background:#fff;color:var(--ink);
+  }
+  button:hover{background:#f4f6fa}
+  button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  button.primary:hover{filter:brightness(1.06)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 400px;min-height:0}
+  .left{display:flex;flex-direction:column;min-width:0;min-height:0;padding:12px;gap:12px}
+  .viewport{
+    position:relative;flex:1 1 44%;min-height:180px;background:#0f1420;border-radius:var(--radius);
+    overflow:hidden;
+  }
+  .viewport video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform:scaleX(-1)}
+  .viewport canvas{position:absolute;inset:0;width:100%;height:100%}
+  .vp-note{
+    position:absolute;left:12px;bottom:12px;right:12px;color:#cbd5e1;font-size:12px;
+    background:rgba(15,20,32,.72);padding:6px 10px;border-radius:8px;backdrop-filter:blur(2px);
+  }
+  .vp-badge{
+    position:absolute;left:12px;top:12px;font-size:12px;padding:4px 9px;border-radius:999px;
+    background:rgba(255,255,255,.92);color:var(--ink);font-weight:600;
+  }
+  .vp-timer{
+    position:absolute;right:12px;top:12px;font-size:26px;font-weight:700;color:#fff;
+    font-variant-numeric:tabular-nums;text-shadow:0 1px 6px rgba(0,0,0,.6);
+  }
+  .chart-wrap{flex:1 1 40%;min-height:170px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);position:relative}
+  .chart-wrap canvas{position:absolute;inset:0;width:100%;height:100%;border-radius:var(--radius)}
+  .chart-legend{position:absolute;right:10px;top:8px;display:flex;gap:12px;font-size:11px;color:var(--ink2);flex-wrap:wrap;max-width:70%}
+  .chart-legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:4px}
+  aside{
+    border-left:1px solid var(--line);background:var(--panel);overflow-y:auto;
+    padding:12px;display:flex;flex-direction:column;gap:12px;min-height:0;
+  }
+  .card{border:1px solid var(--line);border-radius:var(--radius);padding:12px}
+  .card h3{margin:0 0 10px;font-size:13px;font-weight:650;display:flex;align-items:center;gap:6px}
+  .card h3 .tag{font-weight:400;font-size:11px;color:var(--ink3)}
+  .row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .row:last-child{margin-bottom:0}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;padding:6px 10px;font-size:12.5px;background:#fff}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.on{background:var(--brand);color:#fff}
+  select,input[type=number]{
+    font:inherit;font-size:13px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink);
+  }
+  label.chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink2);cursor:pointer}
+  .slider{margin-bottom:11px}
+  .slider .top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px;gap:8px}
+  .slider .top b{font-variant-numeric:tabular-nums;color:var(--brand);font-weight:650}
+  .slider .top .lab{color:var(--ink2)}
+  .slider input[type=range]{width:100%;accent-color:var(--brand);height:18px}
+  .slider .hint{font-size:11px;color:var(--ink3);margin-top:2px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:12.5px}
+  .kv .k{color:var(--ink3)}
+  .kv .v{font-variant-numeric:tabular-nums;text-align:right}
+  .flag{
+    font-size:12px;padding:5px 8px;border-radius:7px;margin-top:6px;
+    background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
+  }
+  .flag.info{background:#f0f9ff;border-color:#bae6fd;color:#075985}
+  .flag.ok{background:#ecfdf5;border-color:#a7f3d0;color:#047857}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;background:#f2f4f8;color:var(--ink2);margin-left:6px}
+  .pill.ok{background:#ecfdf5;color:#047857}
+  .pill.bad{background:#fef2f2;color:#b91c1c}
+  textarea{
+    width:100%;height:150px;font:11.5px/1.5 ui-monospace,Menlo,Consolas,monospace;
+    border:1px solid var(--line);border-radius:8px;padding:8px;resize:vertical;background:#fbfcfe;color:var(--ink);
+  }
+  .diff{font-size:12px;margin-top:8px}
+  .diff div{padding:3px 0;border-bottom:1px dashed var(--line)}
+  .diff .p{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--ink2)}
+  .diff .from{color:var(--danger)}
+  .diff .to{color:var(--ok);font-weight:600}
+  .muted{color:var(--ink3);font-size:12px}
+  .err{color:var(--danger);font-size:12.5px}
+  .phase-chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:3px 9px;border-radius:999px;font-weight:600}
+  .phase-chip i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .store{
+    margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    background:#f8fafc;font-size:12px;color:var(--ink2);
+  }
+  .store.on{background:#f0fdf4;border-color:#bbf7d0}
+  .store.warn{background:#fffbeb;border-color:#fde68a}
+  .store.err{background:#fef2f2;border-color:#fecaca}
+  .store .hd{display:flex;align-items:center;gap:6px;font-weight:650;color:var(--ink);line-height:1.4}
+  .store .hd .dot{width:7px;height:7px;border-radius:50%;background:#94a3b8;flex:0 0 auto}
+  .store.on .hd .dot{background:var(--ok)}
+  .store.warn .hd .dot{background:var(--warn)}
+  .store.err .hd .dot{background:var(--danger)}
+  .store ul.items{margin:6px 0 0;padding:0;list-style:none}
+  .store ul.items li{display:flex;align-items:baseline;gap:6px;padding:2px 0;font-size:11.5px;flex-wrap:wrap}
+  .store ul.items .nm{color:var(--ink2)}
+  .store ul.items .from{color:var(--ink3);text-decoration:line-through;font-variant-numeric:tabular-nums}
+  .store ul.items .to{color:var(--brand);font-weight:650;font-variant-numeric:tabular-nums}
+  .store .note{margin-top:6px;font-size:11.5px;color:var(--ink3)}
+  .store .warnline{margin-top:6px;font-size:11.5px;color:#92400e;line-height:1.5}
+  .store .errline{margin-top:6px;font-size:11.5px;color:#b91c1c;line-height:1.5}
+  .store .acts{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .store .acts button{padding:4px 10px;font-size:12px}
+  .sets{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12px}
+  .sets .k{color:var(--ink3)}
+  .sets .v{font-variant-numeric:tabular-nums;text-align:right}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand"><a href="../index.html" title="返回首页" style="text-decoration:none;color:#8b94a3;font-size:13px;margin-right:6px">←</a>参数调试台</div>
+  <div class="ex-pick">
+    <label for="selExercise">动作</label>
+    <select id="selExercise"></select>
+    <span class="muted" id="exMode" style="font-size:11px"></span>
+  </div>
+  <div class="hud">
+    <div class="hud-item big" id="hudMainWrap"><span class="k" id="hudMainLabel">计数</span><span class="v" id="hudCount">0</span></div>
+    <div class="hud-item"><span class="k">相位</span><span class="v" id="hudPhase">—</span></div>
+    <div class="hud-item"><span class="k">主信号</span><span class="v" id="hudValue">—</span></div>
+    <div class="hud-item"><span class="k">完成段</span><span class="v" id="hudDur">—</span></div>
+    <div class="hud-item"><span class="k">引擎</span><span class="v" id="hudEngine">未启动</span></div>
+    <div class="hud-item"><span class="k">推理</span><span class="v" id="hudInfer">—</span></div>
+  </div>
+  <div class="actions">
+    <button id="btnReset">重置计数</button>
+    <button id="btnExport" class="primary">导出参数</button>
+  </div>
+</header>
+
+<main>
+  <section class="left">
+    <div class="viewport">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="vp-badge" id="vpBadge">未启动</div>
+      <div class="vp-timer" id="vpTimer" style="display:none"></div>
+      <div class="vp-note" id="vpNote">选择输入源后点「开始」。</div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+      <div class="chart-legend" id="chartLegend"></div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h3>机位要求<span class="tag">这个动作必须这么拍</span></h3>
+      <div id="cameraHint" class="muted" style="line-height:1.6"></div>
+    </div>
+
+    <div class="card">
+      <h3>输入源<span class="tag">三种都进同一个追踪器</span></h3>
+      <div class="row">
+        <div class="seg" id="segSource">
+          <button data-src="camera" class="on">摄像头</button>
+          <button data-src="file">本地视频</button>
+          <button data-src="sim">模拟信号</button>
+        </div>
+      </div>
+      <div class="row" id="rowFile" style="display:none">
+        <input type="file" id="fileInput" accept="video/*">
+      </div>
+      <div class="row" id="rowSim" style="display:none">
+        <label class="chk">次数 <input type="number" id="simReps" value="30" min="1" max="300" style="width:64px"></label>
+        <label class="chk">周期(ms) <input type="number" id="simPeriod" value="2000" min="200" max="8000" step="50" style="width:74px"></label>
+        <label class="chk">幅度 <input type="number" id="simScale" value="100" min="20" max="100" step="5" style="width:60px" title="动作幅度占标准幅度的百分比，用来验证「半程不算」"></label>
+      </div>
+      <div class="row" id="rowEngine">
+        <label class="chk">模型
+          <select id="selModel">
+            <option value="full">Full（准）</option>
+            <option value="lite">Lite（快）</option>
+          </select>
+        </label>
+        <label class="chk"><input type="checkbox" id="chkSmooth" checked> 关键点平滑</label>
+        <label class="chk"><input type="checkbox" id="chkMirror" checked> 镜像</label>
+      </div>
+      <div class="row">
+        <button id="btnStart" class="primary">开始</button>
+        <button id="btnStop" disabled>停止</button>
+        <button id="btnSimRun" style="display:none">立即生成并计数</button>
+      </div>
+      <div class="row"><span class="muted" id="srcNote">摄像头需要授权，画面不会离开本机。</span></div>
+    </div>
+
+    <div class="card">
+      <h3>判定参数<span class="tag">改完立刻按缓存重算</span></h3>
+      <div id="sliders"></div>
+      <div class="row">
+        <button id="btnDefaults">恢复默认</button>
+        <span class="muted" id="paramNote"></span>
+      </div>
+      <div class="store" id="storeBar"></div>
+      <input type="file" id="loadFileInput" accept=".json,application/json" style="display:none">
+    </div>
+
+    <div class="card">
+      <h3>曲线显示</h3>
+      <div class="row" id="sigChecks"></div>
+      <div class="row">
+        <label class="chk">时间窗
+          <select id="selWindow">
+            <option value="4000">4 秒</option>
+            <option value="8000" selected>8 秒</option>
+            <option value="15000">15 秒</option>
+            <option value="30000">30 秒</option>
+          </select>
+        </label>
+        <label class="chk">Y 轴
+          <select id="selYRange">
+            <option value="auto" selected>自适应</option>
+            <option value="fixed">固定量程</option>
+          </select>
+        </label>
+      </div>
+      <div class="row"><span class="muted">叠加显示建议只勾同量纲信号（左右腿膝高可一起看）。</span></div>
+    </div>
+
+    <div class="card">
+      <h3>诊断<span class="tag">为什么要看这里</span></h3>
+      <div class="kv">
+        <span class="k">缓存</span><span class="v" id="diagCache">0 帧</span>
+        <span class="k">抖动被丢弃</span><span class="v" id="diagFast">0</span>
+        <span class="k">停住被丢弃</span><span class="v" id="diagSlow">0</span>
+        <span class="k">半程被拒绝</span><span class="v" id="diagPartial">0</span>
+        <span class="k">低置信帧</span><span class="v" id="diagLow">0</span>
+        <span class="k">检测到人</span><span class="v" id="diagPose">—</span>
+      </div>
+      <div id="holdSetList"></div>
+      <div id="flagList"></div>
+    </div>
+
+    <div class="card">
+      <h3>导出配置<span class="tag">回填 data/exercises.json</span></h3>
+      <div class="row">
+        <button id="btnCopy">复制 JSON</button>
+        <button id="btnDownload">下载 .exercise.json</button>
+      </div>
+      <div class="row"><span class="muted">这是完整动作配置，用于把调好的值固化进文件、对所有人都生效。只是自己留一份，用上面参数卡里的「备份存档」。</span></div>
+      <textarea id="jsonOut" spellcheck="false" readonly></textarea>
+      <div class="diff" id="diffOut"></div>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+import { PoseEngine, CameraSource, MODEL_LABELS } from '../shared/tpc-core.js';
+import { SignalSet } from '../shared/tpc-signals.js';
+import { computeLayout, resizeCanvas, drawPoses } from '../shared/tpc-draw.js';
+import { createTracker, modeOf, channelsOf } from '../shared/tpc-counter.js';
+// 参数存档：路径工具与存档读写都走共享模块，保证与 v1-counter.html 用的是同一份存档
+import { TunedStore, flattenParams, diffPatch, getPath, setPath } from '../shared/tpc-store.js';
+
+/* ============================ 状态 ============================ */
+
+const VENDOR = '/vendor/';
+const CACHE_MS = 60000;          // 信号缓存时长：参数变更后按这么长的历史重算
+
+const el = (id) => document.getElementById(id);
+const video = el('video');
+const overlay = el('overlay');
+const chart = el('chart');
+const overlayCtx = overlay.getContext('2d');
+const chartCtx = chart.getContext('2d');
+
+let CFG_ALL = null;
+let EX = null;                    // 当前动作（运行时会叠加存档里的调整）
+let FILE_DEFAULTS = null;         // 文件里的默认值（基准，用于算差异与检测冲突）
+let ORIGINAL_SNAPSHOT = null;     // 摊平后的形式，用于导出时显示 diff
+let paramSpecs = [];              // 按当前动作生成的滑块定义
+
+/** 存档（老师调好的参数） */
+let store = null;
+let savedRecord = null;
+let loadReport = null;
+let saveTimer = null;
+
+/** 运行时对象 */
+let signalSet = null;
+let tracker = null;               // 计数或计时，统一门面
+let engine = null;
+let camera = null;
+let running = false;
+let sourceMode = 'camera';
+let lastPoseAt = 0;
+let poseCount = 0;
+let lastInferMs = null;
+
+/**
+ * 信号缓存 —— 整个调试台的中枢。
+ * 每帧只存「一维信号值 + 置信度」，不存关键点，60 秒也就几百 KB。
+ * 好处：改了阈值不必重做动作，把缓存重放一遍就能看到新计数。
+ */
+let frames = [];                  // [{t, v:{name:value}, c:{name:conf}, phase}]
+let pickedSignals = new Set();
+
+/* ============================ 工具 ============================ */
+
+const fmt = (v, d = 1) => (v === null || v === undefined || !isFinite(v) ? '—' : Number(v).toFixed(d));
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const deep = (o) => JSON.parse(JSON.stringify(o));
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+));
+
+/** 信号量纲 → 滑块量程与模拟幅度余量。阈值全是「数字」，范围必须按量纲给 */
+function sigKind(def) {
+  const t = def ? def.type : 'jointAngle';
+  if (t === 'jointAngle' || t === 'torsoLean') return 'angle';
+  if (t === 'spread') return 'ratio';
+  return 'norm';                  // pointHeight
+}
+const KIND = {
+  angle: { min: 0, max: 180, step: 1, dec: 0, unit: '°', margin: 14 },
+  ratio: { min: 0, max: 3, step: 0.01, dec: 2, unit: '×肩宽', margin: 0.22 },
+  norm: { min: -1.5, max: 1.5, step: 0.01, dec: 2, unit: '', margin: 0.22 },
+};
+function kindOfSignal(name) {
+  return KIND[sigKind(EX && EX.signals ? EX.signals[name] : null)];
+}
+function kindOfMain() {
+  return kindOfSignal(EX && EX.fsm ? EX.fsm.signal : (EX && EX.primary));
+}
+
+/** 相位配色：按 cycle 顺序取，任何动作都不用改代码 */
+const PHASE_COLORS = ['#10b981', '#f59e0b', '#8b5cf6', '#0891b2', '#db2777'];
+function phaseStyle(p) {
+  if (!EX) return { color: '#9ca3af', label: '未识别' };
+  const cycle = EX.fsm ? EX.fsm.cycle : [];
+  const idx = cycle.indexOf(p);
+  if (idx < 0) {
+    if (modeOf(EX) === 'hold') {
+      const m = { idle: ['#9ca3af', '未进入姿势'], pending: ['#f59e0b', '稳定判定中'], holding: ['#10b981', '计时中'], grace: ['#ef4444', '即将中断'] };
+      const s = m[p] || m.idle;
+      return { color: s[0], label: s[1] };
+    }
+    return { color: '#9ca3af', label: '未识别' };
+  }
+  const ph = EX.fsm.phases[p];
+  return { color: PHASE_COLORS[idx % PHASE_COLORS.length], label: ph && ph.label ? ph.label : p };
+}
+
+/* ============================ 滑块定义（按动作生成） ============================ */
+
+const OP_TEXT = { gte: '≥', lte: '≤', gt: '>', lt: '<' };
+
+function buildParamSpecs(ex) {
+  const specs = [];
+  const mainKind = kindOfMain();
+
+  if (modeOf(ex) === 'reps') {
+    // 各相位的进入条件 —— 这是「计数准不准」的核心
+    ex.fsm.cycle.forEach((pid, i) => {
+      const ph = ex.fsm.phases[pid] || {};
+      const enter = ph.enter || {};
+      const isStart = i === 0;
+      for (const op of ['gte', 'lte', 'gt', 'lt']) {
+        if (enter[op] == null) continue;
+        specs.push({
+          path: 'fsm.phases.' + pid + '.enter.' + op,
+          label: (ph.label || pid) + '：' + ex.fsm.signal + ' ' + OP_TEXT[op],
+          kind: mainKind,
+          hint: isStart
+            ? '起始相位的判定边界。「离开这一步」才会开始算一次动作'
+            : '关键相位的判定边界。达不到这里就永远不计数 —— 「半程不算」靠它',
+        });
+      }
+    });
+    specs.push(
+      { path: 'fsm.minRepMs', label: '时长下限 minRepMs', min: 60, max: 3000, step: 10, unit: 'ms', dec: 0,
+        hint: '口径＝进入末相位→回到起始相位的耗时（约半周期）。短于此判为抖动' },
+      { path: 'fsm.maxRepMs', label: '时长上限 maxRepMs', min: 500, max: 20000, step: 250, unit: 'ms', dec: 0,
+        hint: '长于此判为「停住不动」。顺手能抓出「坐椅子站起来」这类假动作' },
+      { path: 'fsm.minHoldFrames', label: '稳定帧数 minHoldFrames', min: 1, max: 6, step: 1, unit: '帧', dec: 0,
+        hint: '进入新相位要连续满足几帧。挡单帧尖峰；高频动作（高抬腿）必须为 1' },
+      { path: 'fsm.lossResetMs', label: '丢失复位 lossResetMs', min: 100, max: 2000, step: 50, unit: 'ms', dec: 0,
+        hint: '看不到人多久后把相位复位，避免两段动作被接成一次' },
+      { path: 'fsm.minConfidence', label: '可信度下限', min: 0.1, max: 0.9, step: 0.05, unit: '', dec: 2,
+        hint: '关键点可信度低于此值时本帧不推进（冻结，不误计）' },
+    );
+    for (const pid of Object.keys(ex.fsm.phaseMaxDwellMs || {})) {
+      specs.push({
+        path: 'fsm.phaseMaxDwellMs.' + pid,
+        label: '「' + ((ex.fsm.phases[pid] || {}).label || pid) + '」停留告警',
+        min: 300, max: 8000, step: 100, unit: 'ms', dec: 0,
+        hint: '在该相位停留超过此时长就打标记，不阻断计数',
+      });
+    }
+  } else {
+    // 计时动作：保持条件
+    (ex.hold.conditions || []).forEach((c, i) => {
+      const k = kindOfSignal(c.signal);
+      for (const op of ['gte', 'lte', 'gt', 'lt']) {
+        if (c[op] == null) continue;
+        specs.push({
+          path: 'hold.conditions.' + i + '.' + op,
+          label: (c.label || c.signal) + ' ' + OP_TEXT[op],
+          kind: k,
+          hint: '全部条件同时成立才计时。任何一条不成立就中断',
+        });
+      }
+    });
+    specs.push(
+      { path: 'hold.minHoldMs', label: '稳定判定 minHoldMs', min: 0, max: 3000, step: 50, unit: 'ms', dec: 0,
+        hint: '条件成立后先稳定这么久才确认开始计时（稳定期会补计）。防止过渡动作被算进去' },
+      { path: 'hold.breakGraceMs', label: '中断宽限 breakGraceMs', min: 0, max: 2000, step: 50, unit: 'ms', dec: 0,
+        hint: '条件短暂不成立多久内不算中断（抗关键点抖动）。宽限期内不计时' },
+      { path: 'hold.minSessionMs', label: '最短有效段 minSessionMs', min: 0, max: 10000, step: 100, unit: 'ms', dec: 0,
+        hint: '单段短于此不计入总时长，避免碎片段刷成绩' },
+      { path: 'hold.minConfidence', label: '可信度下限', min: 0.1, max: 0.9, step: 0.05, unit: '', dec: 2,
+        hint: '关键点可信度低于此值时该帧不计时' },
+    );
+  }
+
+  // 信号平滑（只对配了 smooth 的信号给出滑块）
+  for (const [name, def] of Object.entries(ex.signals || {})) {
+    if (!def || !def.smooth) continue;
+    specs.push(
+      { path: 'signals.' + name + '.smooth.minCutoff', label: name + '·静止截止', min: 0.1, max: 8, step: 0.1, unit: 'Hz', dec: 1,
+        hint: '越小越平滑但延迟越大。关键点已在引擎层平滑过一次，这里是第二道' },
+      { path: 'signals.' + name + '.smooth.beta', label: name + '·速度耦合', min: 0, max: 0.5, step: 0.005, unit: '', dec: 3,
+        hint: '越大则快速动作延迟越低、平滑越少' },
+    );
+  }
+  return specs;
+}
+
+/* ============================ 初始化 ============================ */
+
+async function boot() {
+  const res = await fetch('../data/exercises.json');
+  if (!res.ok) throw new Error('无法读取 data/exercises.json（HTTP ' + res.status + '）');
+  CFG_ALL = await res.json();
+
+  store = new TunedStore();
+  buildExercisePicker();
+
+  const list = exerciseList();
+  await switchExercise(list[0].id, { silent: true });
+
+  bindUI();
+  window.__tune.booted = true;
+  return { count: list.length };
+}
+
+function exerciseList() {
+  return Object.values(CFG_ALL.exercises).sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+function buildExercisePicker() {
+  const sel = el('selExercise');
+  sel.innerHTML = '';
+  for (const ex of exerciseList()) {
+    const o = document.createElement('option');
+    o.value = ex.id;
+    o.textContent = ex.name + '（' + (ex.category === 'hold' ? '计时' : '计数') + '）';
+    sel.appendChild(o);
+  }
+}
+
+/**
+ * 切动作。这是 M3 新增的中枢：配置、存档、滑块、信号层、追踪器全部按新动作重建。
+ */
+async function switchExercise(id, opts = {}) {
+  if (!CFG_ALL.exercises[id]) throw new Error('未知动作：' + id);
+  stopAll();
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+
+  el('selExercise').value = id;
+  FILE_DEFAULTS = deep(CFG_ALL.exercises[id]);
+  ORIGINAL_SNAPSHOT = flattenParams(FILE_DEFAULTS);
+  EX = deep(FILE_DEFAULTS);
+  paramSpecs = buildParamSpecs(EX);
+
+  // 每个动作各存各的存档（spc.tuned.squat / spc.tuned.high_knee …）
+  restoreSaved();
+
+  // 多通道动作（高抬腿）默认把每条通道的信号都画出来 ——
+  // 只画主信号的话，右腿的波形看不见，漏计或串计都无从判断
+  pickedSignals = new Set([EX.primary].concat((EX.channels || []).map((c) => c.signal)));
+  signalSet = new SignalSet(EX.signals);
+  tracker = createTracker(EX);
+  frames = [];
+  paramChangeCount = 0;
+
+  buildSliderUI();
+  buildSignalChecks();
+  buildChartLegend();
+  updateTexts();
+  renderStoreBar();
+  renderAll();
+
+  if (sourceMode === 'sim' && !opts.silent) simRun();
+  return true;
+}
+
+function restoreSaved() {
+  const rec = store.load(EX.id);
+  if (!rec) { savedRecord = null; loadReport = null; return null; }
+  const report = store.restore(EX, rec, FILE_DEFAULTS);
+  savedRecord = rec;
+  loadReport = report;
+  return report;
+}
+
+/** 顶栏/机位/图例等随动作变化的文案 */
+function updateTexts() {
+  const hold = modeOf(EX) === 'hold';
+  el('exMode').textContent = hold ? '计时' : '计数';
+  el('hudMainLabel').textContent = hold ? '累计时长' : '计数';
+  el('hudMainWrap').className = 'hud-item big' + (hold ? ' hold' : '');
+  el('cameraHint').innerHTML =
+    '<b style="color:var(--ink)">' + esc(EX.name) + '</b><br>' + esc(EX.camera.hint || '');
+  el('vpNote').textContent = sourceMode === 'sim'
+    ? '模拟信号模式：不依赖摄像头与模型，直接生成该动作的波形喂给同一个追踪器。'
+    : (EX.camera.hint || '');
+  el('vpTimer').style.display = hold ? '' : 'none';
+  const m = el('selModel');
+  m.value = m.value || 'full';
+}
+
+function buildChartLegend() {
+  const host = el('chartLegend');
+  const hold = modeOf(EX) === 'hold';
+  const items = [];
+  if (hold) {
+    items.push(['#10b981', '计时中'], ['#ef4444', '中断点']);
+  } else {
+    EX.fsm.cycle.forEach((pid, i) => items.push([PHASE_COLORS[i % PHASE_COLORS.length], (EX.fsm.phases[pid] || {}).label || pid]));
+    items.push(['#2563eb', '计一次'], ['#ef4444', '被剔除']);
+  }
+  host.innerHTML = items.map(([c, t]) => '<span><i style="background:' + c + '"></i>' + esc(t) + '</span>').join('');
+}
+
+/* ============================ 参数 UI ============================ */
+
+function buildSliderUI() {
+  const host = el('sliders');
+  host.innerHTML = '';
+  for (const spec of paramSpecs) {
+    const v = getPath(EX, spec.path);
+    const k = spec.kind || null;
+    const dec = spec.dec != null ? spec.dec : (k ? k.dec : 2);
+    const unit = spec.unit != null ? spec.unit : (k ? k.unit : '');
+    const lo = spec.min != null ? spec.min : k.min;
+    const hi = spec.max != null ? spec.max : k.max;
+    const st = spec.step != null ? spec.step : k.step;
+    const wrap = document.createElement('div');
+    wrap.className = 'slider';
+    wrap.innerHTML =
+      '<div class="top"><span class="lab">' + esc(spec.label) + '</span><b>' + fmt(v, dec) + esc(unit) + '</b></div>' +
+      '<input type="range" min="' + lo + '" max="' + hi + '" step="' + st + '" value="' + (v == null ? lo : v) + '">' +
+      '<div class="hint">' + esc(spec.hint) + '</div>';
+    const input = wrap.querySelector('input');
+    input.addEventListener('input', () => {
+      const val = parseFloat(input.value);
+      setPath(EX, spec.path, val);
+      wrap.querySelector('b').textContent = fmt(val, dec) + unit;
+      onParamsChanged(spec.path);
+    });
+    host.appendChild(wrap);
+  }
+}
+
+function refreshSliders() {
+  el('sliders').querySelectorAll('.slider').forEach((wrap, i) => {
+    const spec = paramSpecs[i];
+    if (!spec) return;
+    const k = spec.kind || null;
+    const dec = spec.dec != null ? spec.dec : (k ? k.dec : 2);
+    const unit = spec.unit != null ? spec.unit : (k ? k.unit : '');
+    const v = getPath(EX, spec.path);
+    wrap.querySelector('input').value = v;
+    wrap.querySelector('b').textContent = fmt(v, dec) + unit;
+  });
+}
+
+function buildSignalChecks() {
+  const host = el('sigChecks');
+  if (!EX) return;
+  host.innerHTML = '';
+  for (const name of Object.keys(EX.signals)) {
+    const lab = document.createElement('label');
+    lab.className = 'chk';
+    const ch = (EX.channels || []).find((c) => c.signal === name);
+    // 主信号同时也可能是一条通道（高抬腿的左腿），两个标记都要给 ——
+    // 只写「主信号」的话，老师看不出这条曲线到底是哪条腿
+    let tag = '';
+    if (name === EX.primary) tag += '<span class="pill">主信号</span>';
+    if (ch) tag += '<span class="pill">' + esc(ch.label) + '</span>';
+    lab.innerHTML = '<input type="checkbox"' + (pickedSignals.has(name) ? ' checked' : '') + '> ' +
+      esc(name) + tag;
+    lab.querySelector('input').addEventListener('change', (e) => {
+      if (e.target.checked) pickedSignals.add(name); else pickedSignals.delete(name);
+      drawChart();
+    });
+    host.appendChild(lab);
+  }
+}
+
+/* ============================ 参数变更 → 全量重算 ============================ */
+
+let paramChangeCount = 0;
+
+function onParamsChanged(path) {
+  paramChangeCount++;
+  loadReport = null;   // 老师亲自动手调参 = 接受现状，载入时的冲突提示就此作废
+  signalSet = new SignalSet(EX.signals);   // 平滑参数可能变了
+  replayAll();
+  el('paramNote').textContent = '已按缓存重算 ' + paramChangeCount + ' 次';
+  scheduleSave();
+}
+
+/**
+ * 把缓存的信号整段重放一遍 —— 「改完阈值立刻看到计数变化」就是这么实现的。
+ * 代价只有几毫秒（几千帧的纯数值比较），老师不必重做动作。
+ */
+function replayAll() {
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  tracker = createTracker(EX);
+  for (const f of frames) {
+    tracker.update({ values: f.v, confidence: f.c, tMs: f.t });
+    f.phase = currentPhase();
+  }
+  if (tracker && typeof tracker.finalize === 'function' && frames.length) tracker.finalize(frames[frames.length - 1].t);
+  renderAll();
+}
+
+/** 当前相位标签（计数看 phase，计时看 state） */
+function currentPhase() {
+  if (!tracker) return 'unknown';
+  const s = tracker.snapshot();
+  return s.phase || s.state || 'unknown';
+}
+
+/* ============================ 帧入口 ============================ */
+
+function pushFrame(tMs, values, confidence) {
+  // 时间倒流说明这是新会话 —— 混两条时间线会让曲线和计数都错乱
+  if (frames.length && tMs < frames[frames.length - 1].t) frames = [];
+  frames.push({ t: tMs, v: values, c: confidence, phase: 'unknown' });
+  while (frames.length && tMs - frames[0].t > CACHE_MS) frames.shift();
+}
+
+/**
+ * 开一个新会话：清空信号缓存与追踪器。
+ * 切输入源、重新启动引擎、切动作时都必须调用 —— 否则上一段的读数会带进新会话。
+ */
+function resetSession() {
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  frames = [];
+  tracker = createTracker(EX);
+  renderAll();
+}
+
+function onEngineFrame(res) {
+  const pose = res.poses && res.poses[0] ? res.poses[0] : null;
+  poseCount = res.poses ? res.poses.length : 0;
+  if (pose) lastPoseAt = res.timestampMs;
+  lastInferMs = res.inferenceMs;
+
+  const tMs = res.timestampMs;
+  let values = {};
+  let confidence = {};
+  if (pose) {
+    const sv = signalSet.evaluate(pose, tMs);
+    values = sv.values;
+    confidence = sv.confidence;
+  } else {
+    for (const n of Object.keys(EX.signals)) { values[n] = null; confidence[n] = 0; }
+  }
+
+  pushFrame(tMs, values, confidence);
+  tracker.update({ values, confidence, tMs });
+  if (frames.length) frames[frames.length - 1].phase = currentPhase();
+
+  renderReadouts();
+  el('hudEngine').textContent = engine.delegateInUse === 'GPU' ? 'GPU' : (engine.delegateInUse || '—');
+  el('hudInfer').textContent = lastInferMs ? lastInferMs.toFixed(1) + 'ms' : '—';
+
+  // 30fps 每帧重绘太浪费，抽到 ~20fps
+  if (tMs - chartDrawnAt > 50) drawChart();
+  drawOverlay(pose);
+}
+
+/* ============================ 渲染 ============================ */
+
+let chartDrawnAt = 0;
+
+function renderAll() {
+  renderReadouts();
+  renderDiagnostics();
+  drawChart();
+  updateJsonOut();
+}
+
+function renderReadouts() {
+  const snap = tracker ? tracker.snapshot() : null;
+  const hold = modeOf(EX) === 'hold';
+
+  if (hold) {
+    el('hudCount').textContent = fmt((snap ? snap.liveMs : 0) / 1000, 1) + 's';
+    el('hudValue').textContent = fmt(snap ? snap.checks[0] && snap.checks[0].value : null, 1);
+    const st = snap ? snap.state : 'idle';
+    const ps = phaseStyle(st);
+    el('hudPhase').innerHTML = '<span class="phase-chip" style="background:' + ps.color + '1a;color:' + ps.color + '">' +
+      '<i style="background:' + ps.color + '"></i>' + ps.label + '</span>';
+    el('vpTimer').textContent = fmt((snap ? snap.liveMs : 0) / 1000, 1) + 's';
+    // 完成段：最近一次有效分段
+    const ss = (snap && snap.sessions) || [];
+    const lastValid = ss.filter((s) => s.valid).pop();
+    el('hudDur').innerHTML = lastValid
+      ? (lastValid.ms / 1000).toFixed(1) + 's<span class="pill ok">有效</span>'
+      : (ss.length ? (ss[ss.length - 1].ms / 1000).toFixed(1) + 's<span class="pill bad">太短</span>' : '—');
+  } else {
+    const multi = snap && snap.multiChannel;
+    el('hudCount').textContent = snap ? snap.count : 0;
+    el('hudValue').textContent = fmt(snap ? snap.value : null, snap && kindOfMain() === KIND.angle ? 1 : 2);
+    const ps = phaseStyle(snap ? snap.phase : 'unknown');
+    el('hudPhase').innerHTML = '<span class="phase-chip" style="background:' + ps.color + '1a;color:' + ps.color + '">' +
+      '<i style="background:' + ps.color + '"></i>' + ps.label + '</span>';
+    const rep = snap && snap.lastRep;
+    el('hudDur').innerHTML = rep
+      ? Math.round(rep.durationMs) + 'ms' + (rep.accepted ? '<span class="pill ok">计入</span>' : '<span class="pill bad">已剔除</span>')
+      : '—';
+    if (multi && snap) {
+      el('hudMainLabel').textContent = snap.channels.map((c) => c.label + ' ' + c.count).join(' / ');
+    } else {
+      el('hudMainLabel').textContent = '计数';
+    }
+  }
+
+  renderDiagnostics(snap);
+  drawChart();
+}
+
+function renderDiagnostics(snap) {
+  snap = snap || (tracker ? tracker.snapshot() : null);
+  el('diagCache').textContent = frames.length + ' 帧 / ' +
+    Math.round(((frames.length ? frames[frames.length - 1].t - frames[0].t : 0)) / 100) / 10 + 's';
+  const rj = (snap && snap.rejections) || { too_fast: 0, too_slow: 0, partial: 0, low_conf: 0 };
+  el('diagFast').textContent = rj.too_fast;
+  el('diagSlow').textContent = rj.too_slow;
+  el('diagPartial').textContent = rj.partial;
+  el('diagLow').textContent = rj.low_conf;
+  el('diagPose').textContent = sourceMode === 'sim' ? '模拟' : poseCount;
+
+  // 计时动作：列出各条件当前是否成立（回答「为什么没开始计时」）
+  const setHost = el('holdSetList');
+  setHost.innerHTML = '';
+  if (modeOf(EX) === 'hold' && snap && snap.checks) {
+    const rows = snap.checks.map((c) => {
+      const v = c.value === null ? '—' : (Math.abs(c.value) >= 10 ? c.value.toFixed(0) : c.value.toFixed(2));
+      return '<span class="k">' + (c.ok ? '✓ ' : '✗ ') + esc(c.label) + '</span><span class="v">' + v + '</span>';
+    }).join('');
+    setHost.innerHTML = '<div class="sets" style="margin-top:8px">' + rows + '</div>' +
+      (snap.candidateSince || snap.holding
+        ? ''
+        : '<div class="muted" style="margin-top:4px">全部条件成立后，稳定 ' + snap.needHoldMs + 'ms 才开始计时</div>');
+  }
+
+  const host = el('flagList');
+  host.innerHTML = '';
+  if (modeOf(EX) === 'hold') {
+    const ss = (snap && snap.sessions) || [];
+    if (ss.length) {
+      host.innerHTML = '<div class="muted" style="margin-top:6px">共 ' + ss.length + ' 段，其中有效 ' +
+        ss.filter((s) => s.valid).length + ' 段（最短有效段 ' + EX.hold.minSessionMs + 'ms）</div>' +
+        ss.slice(-4).map((s) => '<div class="flag' + (s.valid ? ' ok' : '') + '">第 ' + s.index + ' 段：' +
+          (s.ms / 1000).toFixed(1) + 's' + (s.valid ? '' : '（太短，未计入）') + '</div>').join('');
+    }
+    return;
+  }
+  const rep = snap && snap.lastRep;
+  if (rep && rep.flags && rep.flags.length) {
+    for (const f of rep.flags) {
+      const d = document.createElement('div');
+      d.className = 'flag' + (f.severity === 'info' ? ' info' : '');
+      d.textContent = f.label + (f.value != null ? '（实测 ' + Math.round(f.value * 100) / 100 + '）' : '') +
+        (f.samples > 1 ? '，出现 ' + f.samples + ' 次' : '');
+      host.appendChild(d);
+    }
+  } else if (rep && rep.reject) {
+    const map = {
+      too_fast: '动作过快被剔除（完成段 ' + Math.round(rep.durationMs) + 'ms）',
+      too_slow: '停留过久被剔除（完成段 ' + Math.round(rep.durationMs) + 'ms）',
+      partial: '只观测到半个动作（未经过起始相位），未计入',
+      low_conf: '关键点不可信，本帧未推进',
+    };
+    const d = document.createElement('div');
+    d.className = 'flag';
+    d.textContent = (map[rep.reject] || rep.reject) +
+      (rep.reject !== 'partial' && EX.feedback && EX.feedback[rep.reject] ? ' —— ' + EX.feedback[rep.reject] : '');
+    host.appendChild(d);
+  } else {
+    host.innerHTML = '<div class="muted" style="margin-top:6px">还没有完成一次动作。</div>';
+  }
+}
+
+/* ---------- 骨架叠加 ---------- */
+
+function drawOverlay(pose) {
+  const layout = computeLayout(overlay, video);
+  resizeCanvas(overlay, video);
+  if (!pose) { overlayCtx.clearRect(0, 0, layout.cw, layout.ch); return; }
+
+  // 主信号是关节角时，在顶点处标出角度值，方便对着曲线看
+  const angles = [];
+  const def = EX.signals[EX.primary];
+  if (def && def.type === 'jointAngle' && pose.worldLandmarks && def.chain) {
+    const v = jointAngleSafe(pose.worldLandmarks, def.chain[0], def.chain[1], def.chain[2]);
+    if (v != null && pose.landmarks[def.chain[1]]) {
+      angles.push({ at: pose.landmarks[def.chain[1]], value: v, label: '角度' });
+    }
+  }
+
+  drawPoses(overlayCtx, [pose], layout, {
+    mirrored: el('chkMirror').checked,
+    showPoints: true,
+    showAngles: true,
+    angles,
+  });
+}
+
+function jointAngleSafe(lm, a, b, c) {
+  if (!lm || !lm[a] || !lm[b] || !lm[c]) return null;
+  const v1 = { x: lm[a].x - lm[b].x, y: lm[a].y - lm[b].y, z: (lm[a].z || 0) - (lm[b].z || 0) };
+  const v2 = { x: lm[c].x - lm[b].x, y: lm[c].y - lm[b].y, z: (lm[c].z || 0) - (lm[b].z || 0) };
+  const n1 = Math.hypot(v1.x, v1.y, v1.z), n2 = Math.hypot(v2.x, v2.y, v2.z);
+  if (n1 < 1e-9 || n2 < 1e-9) return null;
+  const d = (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z) / (n1 * n2);
+  return Math.acos(clamp(d, -1, 1)) * 180 / Math.PI;
+}
+
+/* ---------- 曲线 ---------- */
+
+const SIG_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#db2777', '#65a30d'];
+
+/** 主信号上的阈值线（其他信号的阈值不画，量纲不同，画在一起会误导） */
+function thresholdLines() {
+  const out = [];
+  if (modeOf(EX) === 'reps') {
+    const primary = EX.fsm.signal;
+    EX.fsm.cycle.forEach((pid, i) => {
+      const ph = EX.fsm.phases[pid] || {};
+      const en = ph.enter || {};
+      const color = PHASE_COLORS[i % PHASE_COLORS.length];
+      const label = ph.label || pid;
+      for (const op of ['gte', 'lte', 'gt', 'lt']) {
+        if (en[op] == null) continue;
+        out.push({ v: en[op], color, label: label + ' ' + OP_TEXT[op] + en[op], signal: primary });
+      }
+    });
+  } else {
+    (EX.hold.conditions || []).forEach((c) => {
+      if (c.signal !== EX.primary) return;
+      const label = c.label || c.signal;
+      if (c.gte != null) out.push({ v: c.gte, color: '#10b981', label: label + ' 下限', signal: c.signal });
+      if (c.lte != null) out.push({ v: c.lte, color: '#f59e0b', label: label + ' 上限', signal: c.signal });
+    });
+  }
+  return out;
+}
+
+function drawChart() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = chart.clientWidth, h = chart.clientHeight;
+  if (chart.width !== Math.round(w * dpr) || chart.height !== Math.round(h * dpr)) {
+    chart.width = Math.round(w * dpr);
+    chart.height = Math.round(h * dpr);
+  }
+  const ctx = chartCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  chartDrawnAt = performance.now();
+
+  const padL = 40, padR = 68, padT = 14, padB = 20;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  if (plotW <= 10 || plotH <= 10) return;
+
+  const winMs = parseInt(el('selWindow').value, 10);
+  const now = frames.length ? frames[frames.length - 1].t : 0;
+  const t0 = now - winMs;
+  const vis = frames.filter((f) => f.t >= t0);
+  if (!vis.length) {
+    ctx.fillStyle = '#8b94a3';
+    ctx.font = '12px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText('等待信号…', padL + 6, padT + 18);
+    return;
+  }
+
+  const yMode = el('selYRange').value;
+
+  let lo = Infinity, hi = -Infinity;
+  for (const f of vis) {
+    for (const name of pickedSignals) {
+      const v = f.v[name];
+      if (v === null || v === undefined || !isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  const noData = !isFinite(lo);
+  const fixedK = kindOfMain();
+  if (noData) { lo = fixedK.min; hi = fixedK.max; }
+  else if (yMode === 'fixed') { lo = fixedK.min; hi = fixedK.max; }
+  else {
+    const span = Math.max((fixedK.max - fixedK.min) * 0.08, hi - lo);
+    const mid = (hi + lo) / 2;
+    lo = mid - span * 0.68;
+    hi = mid + span * 0.68;
+  }
+
+  const X = (t) => padL + ((t - t0) / winMs) * plotW;
+  const Y = (v) => padT + (1 - (v - lo) / (hi - lo)) * plotH;
+
+  const lines = thresholdLines();
+
+  // ---- 死区带（迟滞带）：全页最该看懂的一块 ----
+  if (lines.length >= 2) {
+    let a = Infinity, b = -Infinity;
+    for (const l of lines) { if (l.v < a) a = l.v; if (l.v > b) b = l.v; }
+    const yTop = clamp(Y(b) - padT, 0, plotH);
+    const yBot = clamp(Y(a) - padT, 0, plotH);
+    ctx.fillStyle = 'rgba(148,163,184,0.16)';
+    ctx.fillRect(padL, padT + yTop, plotW, Math.max(0, yBot - yTop));
+  }
+
+  // ---- 相位背景带 ----
+  ctx.globalAlpha = 0.13;
+  let runStart = vis[0].t, runPhase = vis[0].phase;
+  for (let i = 1; i <= vis.length; i++) {
+    const cur = i < vis.length ? vis[i].phase : null;
+    if (cur !== runPhase || i === vis.length) {
+      const color = phaseStyle(runPhase).color;
+      ctx.fillStyle = color;
+      ctx.fillRect(X(runStart), padT, Math.max(1, X(vis[i - 1] ? vis[i - 1].t : now) - X(runStart)), plotH);
+      runStart = i < vis.length ? vis[i].t : now;
+      runPhase = cur;
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // ---- 阈值线 ----
+  for (const l of lines) {
+    if (l.v < lo || l.v > hi) continue;
+    const y = Y(l.v);
+    ctx.strokeStyle = l.color;
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = l.color;
+    ctx.font = '11px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText(l.label, padL + plotW + 5, y + 3.5);
+  }
+
+  // ---- 网格 ----
+  ctx.strokeStyle = '#eef1f5';
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + (plotH * g) / 4;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillStyle = '#8b94a3';
+    ctx.font = '10.5px system-ui';
+    ctx.textAlign = 'right';
+    const val = hi - ((hi - lo) * g) / 4;
+    ctx.fillText(Math.abs(val) >= 100 ? val.toFixed(0) : val.toFixed(2), padL - 6, y + 3.5);
+  }
+
+  // ---- 信号折线 ----
+  let ci = 0;
+  for (const name of pickedSignals) {
+    const color = SIG_COLORS[ci % SIG_COLORS.length];
+    ci++;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = name === EX.primary ? 2.2 : 1.4;
+    if (name !== EX.primary) ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    let started = false;
+    for (const f of vis) {
+      const v = f.v[name];
+      if (v === null || v === undefined || !isFinite(v)) { started = false; continue; }
+      const x = X(f.t), y = Y(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    const last = [...vis].reverse().find((f) => f.v[name] != null);
+    if (last) {
+      ctx.fillStyle = color;
+      ctx.font = '10.5px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText(name, X(last.t) + 4, Y(last.v[name]) + 3.5);
+    }
+  }
+
+  // ---- 事件标记 ----
+  const evs = tracker ? tracker.allEvents() : [];
+  const CH_COLOR = { L: '#2563eb', R: '#d85a30', main: '#2563eb' };
+  for (const ev of evs) {
+    if (ev.tMs < t0) continue;
+    const x = X(ev.tMs);
+    if (ev.type === 'count') {
+      const color = CH_COLOR[ev.channel] || '#2563eb';
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, padT + plotH);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, padT + 5, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (ev.type === 'reject') {
+      ctx.strokeStyle = 'rgba(239,68,68,0.5)';
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, padT + plotH - 8);
+      ctx.lineTo(x, padT + plotH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (ev.type === 'start' || ev.type === 'end' || ev.type === 'break') {
+      const c = ev.type === 'start' ? '#10b981' : (ev.type === 'break' ? '#ef4444' : '#0f766e');
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, padT + plotH);
+      ctx.stroke();
+    }
+  }
+
+  if (noData) {
+    ctx.fillStyle = '#8b94a3';
+    ctx.font = '12.5px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('时间窗内没有有效信号 —— 确认全身在画面内，或换一个输入源',
+      padL + plotW / 2, padT + plotH / 2);
+    ctx.textAlign = 'left';
+  }
+}
+
+/* ============================ 输入源 ============================ */
+
+function setSource(mode) {
+  sourceMode = mode;
+  resetSession();
+  document.querySelectorAll('#segSource button').forEach((b) => b.classList.toggle('on', b.dataset.src === mode));
+  el('rowFile').style.display = mode === 'file' ? '' : 'none';
+  el('rowSim').style.display = mode === 'sim' ? '' : 'none';
+  el('rowEngine').style.display = mode === 'sim' ? 'none' : '';
+  el('btnSimRun').style.display = mode === 'sim' ? '' : 'none';
+  el('btnStart').style.display = mode === 'sim' ? 'none' : '';
+  el('btnStop').style.display = mode === 'sim' ? 'none' : '';
+  el('srcNote').textContent = mode === 'camera'
+    ? '摄像头需要授权，画面不会离开本机。'
+    : mode === 'file'
+      ? '选择一个本地视频文件循环播放。用录好的动作视频调参最方便，可反复重放。'
+      : '不接摄像头，直接生成该动作的标准波形。用来验证阈值逻辑、看清界面该怎么表现。';
+  el('vpNote').textContent = mode === 'sim'
+    ? '模拟信号模式：不依赖摄像头与模型，直接生成波形喂给同一个追踪器。'
+    : (EX.camera.hint || '');
+}
+
+async function startEngine() {
+  el('btnStart').disabled = true;
+  try {
+    stopAll();
+    resetSession();
+    if (sourceMode === 'camera') {
+      camera = new CameraSource(video);
+      await camera.start();
+      el('vpBadge').textContent = '摄像头 ' + video.videoWidth + '×' + video.videoHeight;
+    } else {
+      const file = el('fileInput').files && el('fileInput').files[0];
+      if (!file) throw new Error('请先选择一个视频文件');
+      video.srcObject = null;
+      video.src = URL.createObjectURL(file);
+      video.loop = true;
+      video.muted = true;
+      await video.play();
+      el('vpBadge').textContent = '视频 ' + video.videoWidth + '×' + video.videoHeight;
+    }
+
+    engine = new PoseEngine({
+      vendorBase: VENDOR,
+      model: el('selModel').value,
+      numPoses: 1,
+      targetFps: 30,
+      smoothing: el('chkSmooth').checked,
+      onFrame: onEngineFrame,
+      onError: (e) => { el('hudEngine').textContent = '错误'; console.error(e); },
+    });
+    el('hudEngine').textContent = '加载中';
+    await engine.load();
+    engine.start(video);
+    running = true;
+    el('hudEngine').textContent = engine.delegateInUse || 'ready';
+    el('btnStop').disabled = false;
+    el('vpBadge').textContent += ' · ' + (engine.delegateInUse === 'GPU' ? 'GPU' : 'CPU');
+  } catch (e) {
+    el('hudEngine').textContent = '失败';
+    el('srcNote').innerHTML = '<span class="err">' + esc(e && e.message ? e.message : e) + '</span>';
+  } finally {
+    el('btnStart').disabled = false;
+  }
+}
+
+function stopAll() {
+  if (engine) { try { engine.close(); } catch (e) { /* 忽略 */ } engine = null; }
+  if (camera) { try { camera.stop(); } catch (e) { /* 忽略 */ } camera = null; }
+  running = false;
+  el('btnStop').disabled = true;
+  // 计时动作：停止时把进行中的那一段结账，否则它永远不会进 totalMs
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+}
+
+/* ---------- 模拟信号（按当前动作生成，不再只支持深蹲） ---------- */
+
+const ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(x, 0, 1));
+
+/**
+ * 从配置反推模拟波形的两个端点：起始相位的合格值 与 末相位的合格值。
+ * 这样任何新增的计数动作都能自动获得可用的模拟信号，不必再写代码。
+ * @param {number} amplitudePct 幅度百分比，用来演示「半程不算」
+ */
+/**
+ * 从配置反推模拟波形的两个端点。
+ * - start      = 起始相位判定边界再往外一点（模拟「标准准备姿势」）
+ * - fullExtreme= 末相位判定边界再往外一点（模拟「标准幅度的最低点」）
+ * 这样任何新增的计数动作都能自动获得可用的模拟信号，不必再写代码。
+ */
+function simEndpoints() {
+  const cycle = EX.fsm.cycle;
+  const e0 = (EX.fsm.phases[cycle[0]] || {}).enter || {};
+  const eN = (EX.fsm.phases[cycle[cycle.length - 1]] || {}).enter || {};
+  const m = kindOfMain().margin;
+  const pick = (en) => {
+    if (en.gte != null) return en.gte + m;
+    if (en.lte != null) return en.lte - m;
+    if (en.gt != null) return en.gt + m;
+    if (en.lt != null) return en.lt - m;
+    return 0;
+  };
+  return { start: pick(e0), fullExtreme: pick(eN) };
+}
+
+/**
+ * @param {number} perChReps 每条通道各自的周期数
+ * @param {number} periodMs  单条通道一个完整「下—上」周期的时长
+ * @param {number} amplitudePct 行程占标准行程的百分比。100=标准幅度，50≈半程
+ * @param {number} [explicitExtreme] 直接指定最低点的值（覆盖幅度百分比，测试用）
+ *
+ * 多通道动作（原地高抬腿）的模拟必须**逐通道生成、相邻通道错开半个周期**：
+ * 左右腿本来就是交替抬的。若像单通道那样只驱动主信号，右腿永远是「落地」，
+ * 模拟出来的数据既不能验证双通道求和，也看不出「合成取大值会漏计」这件事。
+ */
+function simRepsFrames(perChReps, periodMs, amplitudePct, fps, explicitExtreme) {
+  const { start, fullExtreme } = simEndpoints();
+  const other = explicitExtreme != null
+    ? explicitExtreme
+    : start + (fullExtreme - start) * (clamp(amplitudePct, 0, 100) / 100);
+  const preMs = 900, postMs = 700;
+  const dt = 1000 / fps;
+  const half = periodMs / 2;
+
+  const chs = (EX.channels && EX.channels.length)
+    ? EX.channels
+    : [{ id: 'main', label: '', signal: EX.primary }];
+  const offsetOf = (i) => (periodMs / chs.length) * i;
+  const maxOffset = offsetOf(chs.length - 1);
+
+  const total = preMs + perChReps * periodMs + postMs + maxOffset;
+
+  // 单条通道在「相对自身周期起点」的取值。u 越界即视为停在起始姿势
+  const at = (u) => {
+    if (u < 0 || u >= perChReps * periodMs) return start;
+    const tl = u % periodMs;
+    const d = tl < half ? ease(tl / half) : 1 - ease((tl - half) / half);
+    return start + (other - start) * d;
+  };
+
+  const out = [];
+  for (let t = 0; t <= total; t += dt) {
+    const u = t - preMs;
+    const v = {};
+    const c = {};
+    for (const n of Object.keys(EX.signals)) { v[n] = null; c[n] = 0; }
+    chs.forEach((ch, i) => {
+      v[ch.signal] = at(u - offsetOf(i));
+      c[ch.signal] = 1;
+    });
+    out.push({ t, v, c });
+  }
+  return out;
+}
+
+/** 计时动作：生成「不满足 → 保持 N 秒 → 不满足」 */
+function simHoldSignal(seconds, amplitudePct, fps) {
+  const preMs = 900, postMs = 700;
+  const total = preMs + seconds * 1000 + postMs;
+  const dt = 1000 / fps;
+  const mk = (c, satisfied) => {
+    const k = kindOfSignal(c.signal);
+    const m = k.margin;
+    if (satisfied) {
+      if (c.gte != null && c.lte != null) return (c.gte + c.lte) / 2;
+      if (c.gte != null) return c.gte + m;
+      return c.lte - m;
+    }
+    if (c.gte != null && c.lte != null) return c.lte + m * 2;
+    if (c.gte != null) return c.gte - m * 2;
+    return c.lte + m * 2;
+  };
+  const out = [];
+  for (let t = 0; t <= total; t += dt) {
+    const inside = t >= preMs && t < preMs + seconds * 1000;
+    const v = {};
+    for (const c of EX.hold.conditions) {
+      v[c.signal] = inside ? mk(c, true) : mk(c, false);
+    }
+    out.push({ t, v });
+  }
+  return out;
+}
+
+/** 一次性生成波形并整段跑一遍（瞬间完成，不等实时） */
+function simRun(opts = {}) {
+  const fps = opts.fps || 30;
+  const amplitude = opts.amplitude != null ? opts.amplitude : parseInt(el('simScale').value, 10);
+  frames = [];
+
+  if (modeOf(EX) === 'hold') {
+    const seconds = opts.reps != null ? opts.reps : parseInt(el('simReps').value, 10);
+    const sig = simHoldSignal(seconds, amplitude, fps);
+    for (const s of sig) {
+      const c = {};
+      for (const n of Object.keys(EX.signals)) c[n] = s.v[n] != null ? 1 : 0;
+      frames.push({ t: s.t, v: s.v, c, phase: 'unknown' });
+    }
+    el('vpBadge').textContent = '模拟信号 · 保持 ' + seconds + 's';
+  } else {
+    const reps = opts.reps != null ? opts.reps : parseInt(el('simReps').value, 10);
+    const periodMs = opts.periodMs != null ? opts.periodMs : parseInt(el('simPeriod').value, 10);
+    // extreme：直接指定最低点的值（自动化测试用）。bottom 是它的旧名，保留兼容
+    const explicit = opts.extreme != null ? opts.extreme : (opts.bottom != null ? opts.bottom : null);
+
+    // 「模拟 20 次高抬腿」指左右腿合计 20 次 → 每条腿 10 次，两腿交替错开半个周期
+    const nCh = (EX.channels && EX.channels.length) ? EX.channels.length : 1;
+    const perCh = nCh > 1 ? Math.max(1, Math.round(reps / nCh)) : reps;
+    const sig = simRepsFrames(perCh, periodMs, amplitude, fps, explicit);
+    for (const s of sig) frames.push({ t: s.t, v: s.v, c: s.c, phase: 'unknown' });
+    el('vpBadge').textContent = '模拟信号 · ' + (perCh * nCh) + ' 次' +
+      (nCh > 1 ? '（每腿 ' + perCh + ' 次，左右交替）' : '') +
+      ' / ' + periodMs + 'ms / 幅度 ' + amplitude + '%';
+  }
+
+  tracker = createTracker(EX);
+  for (const f of frames) {
+    tracker.update({ values: f.v, confidence: f.c, tMs: f.t });
+    f.phase = currentPhase();
+  }
+  if (typeof tracker.finalize === 'function' && frames.length) tracker.finalize(frames[frames.length - 1].t);
+  renderAll();
+  const s = tracker.snapshot();
+  return {
+    count: s.count,
+    liveMs: s.liveMs,
+    totalMs: s.totalMs,
+    rejections: s.rejections,
+    channels: s.channels ? s.channels.map((c) => ({ id: c.id, label: c.label, count: c.count })) : null,
+    frames: frames.length,
+  };
+}
+
+/* ============================ 存档：老师调好的参数 ============================ */
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveTimer = null; doSave(); }, 400);
+}
+
+function doSave() {
+  if (!store) return null;
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  const res = store.save(EX.id, {
+    patch: diffPatch(EX, FILE_DEFAULTS),
+    baseline: flattenParams(FILE_DEFAULTS),
+    cfgVersion: CFG_ALL.version,
+  });
+  if (res.ok) savedRecord = res.record;
+  renderStoreBar();
+  return res;
+}
+
+function dropSaved() {
+  store.clear(EX.id);
+  savedRecord = null;
+  loadReport = null;
+  EX = deep(FILE_DEFAULTS);
+  refreshSliders();
+  signalSet = new SignalSet(EX.signals);
+  replayAll();
+  renderStoreBar();
+}
+
+function paramLabel(path) {
+  const spec = paramSpecs.find((s) => s.path === path);
+  return spec ? spec.label : path;
+}
+
+function fmtParamValue(path, v) {
+  const spec = paramSpecs.find((s) => s.path === path);
+  if (v === null || v === undefined) return '—';
+  if (typeof v !== 'number') return String(v);
+  const k = spec && spec.kind ? spec.kind : null;
+  const dec = spec && spec.dec != null ? spec.dec : (k ? k.dec : 2);
+  const unit = spec && spec.unit != null ? spec.unit : (k ? k.unit : '');
+  return v.toFixed(dec) + unit;
+}
+
+const storeActsHtml = () =>
+  '<div class="acts">' +
+  '<button id="btnBackup">备份存档</button>' +
+  '<button id="btnRestoreFile">载入存档</button>' +
+  '</div>';
+
+function bindStoreActs() {
+  const b = el('btnBackup');
+  if (b) b.addEventListener('click', backupSaved);
+  const r = el('btnRestoreFile');
+  if (r) r.addEventListener('click', () => el('loadFileInput').click());
+}
+
+function renderStoreBar() {
+  const host = el('storeBar');
+
+  if (store.degraded || store.lastError) {
+    host.className = 'store err';
+    host.innerHTML =
+      '<div class="hd"><i class="dot"></i>参数无法保存到本机</div>' +
+      '<div class="errline">' +
+      (store.degraded
+        ? '浏览器禁用了本地存储（隐私模式或站点设置）。当前调整只在本次打开期间有效，刷新后会回到默认值。'
+        : '写入失败：' + esc(store.lastError.message || store.lastError)) +
+      '</div>';
+    return;
+  }
+
+  const patch = savedRecord ? savedRecord.patch : {};
+  const keys = Object.keys(patch);
+
+  if (!keys.length) {
+    host.className = 'store';
+    host.innerHTML =
+      '<div class="hd"><i class="dot"></i>' + esc(EX.name) + '：参数与文件默认值一致</div>' +
+      '<div class="note">改动任意滑块后会自动保存，下次打开（或切回本动作）自动载入。</div>' +
+      storeActsHtml();
+    bindStoreActs();
+    return;
+  }
+
+  const conflicts = (loadReport && loadReport.conflicts) || [];
+  const stale = (loadReport && loadReport.unknown) || [];
+  const warn = conflicts.length > 0 || stale.length > 0;
+
+  const rows = keys.map((k) => {
+    const from = ORIGINAL_SNAPSHOT[k];
+    return '<li><span class="nm" title="' + esc(k) + '">' + esc(paramLabel(k)) + '</span>' +
+      '<span class="from">' + esc(fmtParamValue(k, from)) + '</span>' +
+      '<span style="color:#8b94a3">→</span>' +
+      '<span class="to">' + esc(fmtParamValue(k, patch[k])) + '</span></li>';
+  }).join('');
+
+  let extra = '';
+  if (conflicts.length) {
+    extra += '<div class="warnline">⚠ 有 ' + conflicts.length + ' 项的文件默认值后来被改过，' +
+      '当前仍按你调好的值运行：' +
+      conflicts.map((c) => esc(paramLabel(c.path)) + '（文件里现在是 ' + esc(fmtParamValue(c.path, c.fileNow)) +
+        '，你调的是 ' + esc(fmtParamValue(c.path, c.saved)) + '）').join('；') +
+      '</div>';
+  }
+  if (stale.length) {
+    extra += '<div class="warnline">⚠ 有 ' + stale.length + ' 项存档已失效（配置文件里不再存在），已忽略：' +
+      esc(stale.join('、')) + '</div>';
+  }
+
+  host.className = 'store on' + (warn ? ' warn' : '');
+  host.innerHTML =
+    '<div class="hd"><i class="dot"></i>' + esc(EX.name) + '：已保存 ' + keys.length + ' 项调整' +
+    '<span style="font-weight:400;color:#8b94a3">· ' + esc(savedRecord.savedAtText || '') + ' · 下次打开自动载入</span></div>' +
+    '<ul class="items">' + rows + '</ul>' + extra + storeActsHtml();
+  bindStoreActs();
+}
+
+/* ---------- 备份 / 载入存档 ---------- */
+
+function downloadJson(name, obj) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+function backupSaved() {
+  doSave();
+  if (!savedRecord) {
+    el('paramNote').textContent = '当前没有改动，无需备份';
+    return;
+  }
+  downloadJson(EX.id + '.tuned.json', savedRecord);
+  el('paramNote').textContent = '已备份 ' + Object.keys(savedRecord.patch).length + ' 项调整';
+}
+
+async function importSaved(file) {
+  try {
+    const parsed = store.parseImport(await file.text(), flattenParams(FILE_DEFAULTS));
+    if (parsed.id && parsed.id !== EX.id) {
+      throw new Error('这份存档属于「' + parsed.id + '」，不是当前动作「' + EX.id + '」');
+    }
+    EX = deep(FILE_DEFAULTS);
+    const report = store.restore(EX, { patch: parsed.patch, baseline: parsed.baseline }, FILE_DEFAULTS);
+    if (!report.applied.length) throw new Error('文件里的参数项在当前配置里都不存在，可能版本差太多');
+
+    loadReport = report;
+    refreshSliders();
+    signalSet = new SignalSet(EX.signals);
+    replayAll();
+    doSave();
+    el('paramNote').textContent = '已载入 ' + report.applied.length + ' 项' +
+      (report.unknown.length ? '，忽略失效项 ' + report.unknown.length + ' 项' : '');
+  } catch (e) {
+    el('paramNote').innerHTML = '<span class="err">载入失败：' + esc(e && e.message ? e.message : e) + '</span>';
+  }
+}
+
+/* ============================ 导出 ============================ */
+
+function buildExport() {
+  const o = {
+    id: EX.id,
+    name: EX.name,
+    category: EX.category,
+    primary: EX.primary,
+    signals: EX.signals,
+  };
+  if (modeOf(EX) === 'hold') o.hold = EX.hold;
+  else {
+    o.fsm = EX.fsm;
+    if (EX.channels) o.channels = EX.channels;
+  }
+  return o;
+}
+
+function updateJsonOut() {
+  el('jsonOut').value = JSON.stringify(buildExport(), null, 2);
+
+  const flatNow = flattenParams(buildExport());
+  const diffs = [];
+  for (const k of Object.keys(flatNow)) {
+    const before = ORIGINAL_SNAPSHOT[k];
+    if (before !== undefined && flatNow[k] !== before) {
+      diffs.push({ path: k, from: before, to: flatNow[k] });
+    }
+  }
+  const host = el('diffOut');
+  if (!diffs.length) {
+    host.innerHTML = '<div class="muted">与 data/exercises.json 里的值一致，没有改动。</div>';
+    return;
+  }
+  host.innerHTML = '<div class="muted" style="margin-bottom:4px">相对文件里的原值，共改了 ' + diffs.length + ' 项：</div>' +
+    diffs.map((d) => '<div><span class="p" title="' + esc(d.path) + '">' + esc(paramLabel(d.path)) +
+      '</span> <span class="from">' + esc(fmtParamValue(d.path, d.from)) +
+      '</span> → <span class="to">' + esc(fmtParamValue(d.path, d.to)) + '</span></div>').join('');
+}
+
+/* ============================ 事件绑定 ============================ */
+
+function bindUI() {
+  el('selExercise').addEventListener('change', (e) => {
+    switchExercise(e.target.value).catch((err) => {
+      el('paramNote').innerHTML = '<span class="err">切换失败：' + esc(err && err.message ? err.message : err) + '</span>';
+    });
+  });
+  document.querySelectorAll('#segSource button').forEach((b) => {
+    b.addEventListener('click', () => { stopAll(); setSource(b.dataset.src); });
+  });
+  el('btnStart').addEventListener('click', startEngine);
+  el('btnStop').addEventListener('click', () => { stopAll(); el('hudEngine').textContent = '已停止'; renderAll(); });
+  el('btnSimRun').addEventListener('click', () => simRun());
+  el('btnReset').addEventListener('click', () => {
+    paramChangeCount = 0;
+    el('paramNote').textContent = '';
+    resetSession();
+    if (sourceMode === 'sim') simRun();
+  });
+  el('btnDefaults').addEventListener('click', () => {
+    paramChangeCount = 0;
+    dropSaved();
+    el('paramNote').textContent = '已恢复默认，存档已清空';
+  });
+  el('btnExport').addEventListener('click', () => {
+    updateJsonOut();
+    el('jsonOut').scrollIntoView({ block: 'center' });
+  });
+  el('btnCopy').addEventListener('click', async () => {
+    const text = JSON.stringify(buildExport(), null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      el('btnCopy').textContent = '已复制';
+    } catch (e) {
+      el('jsonOut').select();
+      document.execCommand && document.execCommand('copy');
+      el('btnCopy').textContent = '已复制';
+    }
+    setTimeout(() => { el('btnCopy').textContent = '复制 JSON'; }, 1400);
+  });
+  el('btnDownload').addEventListener('click', () => {
+    downloadJson(EX.id + '.exercise.json', buildExport());
+  });
+  el('loadFileInput').addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';     // 清空，否则同一个文件第二次选不触发 change
+    if (f) await importSaved(f);
+  });
+  el('selWindow').addEventListener('change', drawChart);
+  el('selYRange').addEventListener('change', drawChart);
+  el('chkMirror').addEventListener('change', () => drawOverlay(null));
+  window.addEventListener('resize', () => { drawChart(); });
+  window.addEventListener('beforeunload', () => { if (saveTimer) doSave(); });
+
+  const reSim = () => { if (sourceMode === 'sim') simRun(); };
+  el('simReps').addEventListener('change', reSim);
+  el('simPeriod').addEventListener('change', reSim);
+  el('simScale').addEventListener('change', reSim);
+}
+
+/* ============================ 调试出口 ============================ */
+
+window.__tune = {
+  booted: false,
+  get cfg() { return EX; },
+  get exercises() { return exerciseList().map((e) => ({ id: e.id, name: e.name, category: e.category, unit: e.unit })); },
+  get exerciseId() { return EX ? EX.id : null; },
+  get exerciseName() { return EX ? EX.name : null; },
+  get mode() { return EX ? modeOf(EX) : null; },
+  setExercise(id) { return switchExercise(id); },
+  get count() { return tracker ? tracker.count : 0; },
+  get phase() { return currentPhase(); },
+  get frames() { return frames.length; },
+  get rejections() { return tracker ? (tracker.snapshot().rejections || { too_fast: 0, too_slow: 0, partial: 0, low_conf: 0 }) : null; },
+  get events() { return tracker ? tracker.allEvents() : []; },
+  /** 统一读数：计数动作看 count，计时动作看 liveMs / totalMs */
+  get readout() {
+    if (!tracker) return null;
+    const s = tracker.snapshot();
+    return {
+      mode: s.mode,
+      count: s.count,
+      phase: s.phase || null,
+      state: s.state || null,
+      liveMs: s.liveMs != null ? s.liveMs : null,
+      totalMs: s.totalMs != null ? s.totalMs : null,
+      holding: s.holding != null ? s.holding : null,
+      channels: s.channels ? s.channels.map((c) => ({ id: c.id, count: c.count })) : null,
+    };
+  },
+  get engineState() { return engine ? engine.state : 'idle'; },
+  get delegate() { return engine ? engine.delegateInUse : null; },
+  get sourceMode() { return sourceMode; },
+  setSource,
+  simRun,
+  replayAll,
+  setParam(path, value) {
+    setPath(EX, path, value);
+    refreshSliders();
+    onParamsChanged(path);
+    return getPath(EX, path);
+  },
+  getParam(path) { return getPath(EX, path); },
+  paramPaths() { return paramSpecs.map((s) => s.path); },
+  exportJson: () => JSON.stringify(buildExport(), null, 2),
+  diffCount: () => {
+    const flatNow = flattenParams(buildExport());
+    return Object.keys(flatNow).filter((k) => ORIGINAL_SNAPSHOT[k] !== undefined && flatNow[k] !== ORIGINAL_SNAPSHOT[k]).length;
+  },
+
+  /* ---- 存档相关 ---- */
+  get saved() { return savedRecord; },
+  get savedCount() { return savedRecord ? Object.keys(savedRecord.patch).length : 0; },
+  get savedPatch() { return savedRecord ? savedRecord.patch : null; },
+  get savedAt() { return savedRecord ? savedRecord.savedAt : null; },
+  get savedAtText() { return savedRecord ? savedRecord.savedAtText : null; },
+  get loadReport() { return loadReport; },
+  get storeDegraded() { return !!(store && store.degraded); },
+  get storeBarClass() { return el('storeBar').className; },
+  get storeBarText() { return el('storeBar').innerText.replace(/\s+/g, ' ').trim(); },
+  get storeRaw() {
+    try { return store.storage.getItem(store.keyOf(EX.id)); } catch (e) { return null; }
+  },
+  /** 全部动作的存档键名（验证「各动作各存各的」） */
+  storeKeys() {
+    try {
+      const n = store.storage.length || 0;
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const k = store.storage.key(i);
+        if (k && k.indexOf(store.prefix) === 0) out.push(k);
+      }
+      return out.sort();
+    } catch (e) { return []; }
+  },
+  get fileDefaults() { return FILE_DEFAULTS; },
+  saveNow() {
+    const r = doSave();
+    return { ok: !!(r && r.ok), cleared: !!(r && r.cleared), count: savedRecord ? Object.keys(savedRecord.patch).length : 0 };
+  },
+  clearSaved() {
+    store.clear(EX.id);
+    savedRecord = null;
+    loadReport = null;
+    renderStoreBar();
+    return true;
+  },
+  dropSaved,
+  backupPayload: () => savedRecord,
+
+  reset() { resetSession(); return this.count; },
+};
+
+boot().catch((e) => {
+  console.error(e);
+  document.body.insertAdjacentHTML('afterbegin',
+    '<div style="padding:10px 16px;background:#fef2f2;color:#b91c1c;font-size:13px">初始化失败：' +
+    (e && e.message ? e.message : e) + '</div>');
+});
+</script>
+</body>
+</html>

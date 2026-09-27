@@ -1,0 +1,524 @@
+{
+  "version": "0.3.1",
+  "updatedAt": "2026-09-22",
+  "note": "所有阈值集中在此文件。老师改这里就能改计数标准，不需要碰代码。改完用 tools/tune.html 对着真人验证，再跑 node tools/test-counter.mjs 跑回归。阈值初值是标准动作的合理起点，**必须用调试台对真人校准**。",
+
+  "meta": {
+    "category": {
+      "reps": "计数类。走完一个相位环算一次",
+      "hold": "保持类。条件成立的时长累加计时（马步、靠墙静蹲）"
+    },
+    "signalTypes": {
+      "jointAngle": "三点夹角（度）。chain 用「左」侧索引书写，side 决定取哪侧或如何归约。space 默认 world（米制，抗透视）",
+      "pointHeight": "某点相对参考点组的归一化高度。图像坐标 y 向下 → 值越大表示越靠下。scale 用人体自身长度做归一化以消除距离影响",
+      "spread": "两点间距，用人体自身长度归一化。开合跳用踝间距/肩宽",
+      "torsoLean": "躯干倾角（度）。from:'vertical'（默认）与垂直轴夹角：站立≈0、躺平≈90；from:'horizontal' 与水平面夹角：躺平≈0、直立≈90"
+    },
+    "sideValues": {
+      "left": "取左侧",
+      "right": "取右侧",
+      "min": "两侧各算一次取小（侧拍时远侧被遮挡，深蹲/俯卧撑用这个更稳）",
+      "max": "两侧各算一次取大",
+      "mean": "两侧平均"
+    },
+    "scaleKeys": {
+      "legLength": "髋→踝。注意：抬腿类动作腿会折叠，用它会自己放大自己，高抬腿改用 torsoLength",
+      "torsoLength": "肩中点→髋中点。躯干姿态变化时最稳定，抬腿/挥手都不影响",
+      "shoulderWidth": "肩宽。开合跳的踝距用它归一化",
+      "hipWidth": "髋宽",
+      "kneeToAnkle": "膝→踝"
+    },
+    "fsmFields": {
+      "signal": "主信号名，必须是 signals 里的键",
+      "cycle": "相位环。相邻相位不能相同；回到第 0 项即完成一次计数。相位区间之间故意留空档，空档就是迟滞带",
+      "phases[id].enter": "进入该相位的信号条件，支持 gte/lte/gt/lt 任意组合（全部满足才算通过）",
+      "minRepMs": "时长下限。口径是「进入末相位 → 回到起始相位」的耗时，不是完整周期（死区内的穿越状态机看不见）。短于此判为抖动并丢弃",
+      "maxRepMs": "时长上限，同上口径。长于此判为「停住不动」并丢弃，能顺带抓出「坐椅子站起来」。0 表示不限",
+      "minHoldFrames": "进入新相位需连续满足的帧数，用于挡住单帧尖峰。高抬腿这类快动作必须为 1，否则会漏计",
+      "lossResetMs": "关键点丢失多久后复位相位（避免人走开又回来把两段接成一次）",
+      "minConfidence": "主信号可信度下限，低于此值本帧不推进状态机",
+      "phaseMaxDwellMs": "某个相位停留超过多少毫秒就打标记（不阻断计数）",
+      "guards": "动作规范性检查。**每项写的是「应该成立的条件」**，不成立才打标记（例：当膝关节角 gt 70 表示「应大于 70」，蹲到 65 度就会标记）。只记录到该次计数的 flags 里，不阻断计数",
+      "speak": "可选。指定这项告警「语音里怎么说」。不写时会自动去掉 label 里的括号补充当口语短句（「手臂未举过头顶（开合跳要求双手上举）」→「手臂未举过头顶」）。写 \"speak\": false 可让该条只显示不出声"
+    },
+    "voice": {
+      "怎么分工": "「语音播报」报结果（每 5 次报数字、计时结束报秒数）；「语音指导」报原因（动作被判不合格时念一句错在哪）。两个开关各自独立、默认都关，勾选状态存 spc.voice.v1",
+      "什么算不合格": "① 计数被拒（too_fast / too_slow / partial）—— 数字根本不涨，这一类必须覆盖；② 计数通过但打了 guards 标记或相位停留过久。一次踩几条只念最主要的一条：severity=warn 优先于 info，同级看持续帧数",
+      "计时类怎么判": "没有「计数被拒」概念，只报能分辨的两种：段没到 minSessionMs（念「时间太短，不算」）、段内条件断过 ≥2 次（念「没保持住，<哪条>」）。正常站起来结束一段不念 —— 主动收势与姿势散掉在数据上分不清，不猜",
+      "不冲突不重复": "同一次动作只要有不合格原因要说就不报数字；两条语音共用一条串行通道，撞车时指导抢占计数；同一句原因 5 秒冷却；待播槽只留一条（新消息替换旧的）",
+      "冷却与文案": "冷却 5000ms，写在 v1-counter.html 的 speaker 构造里。文案来自 guard.label / condition.label（自动去括号），需要换说法就写 speak 字段"
+    },
+    "channels": "多通道计数。留空表示单通道（直接读 fsm）。用于**左右交替**的动作：高抬腿若把两腿合成一个取大值信号，一条腿落地时另一条已抬起，信号永不回落，必然严重漏计。此时各通道指定自己的 signal，fsm 作模板",
+    "holdFields": {
+      "conditions": "全部满足才算「在保持」。每项 {signal, gte/lte, label}，可选 speak 指定语音里的说法（不写则自动去括号）",
+      "minHoldMs": "条件成立后先稳定这么久才确认开始计时（防过渡期被计入）。稳定期本身会补计",
+      "breakGraceMs": "条件短暂不成立多久内不当作中断（防关键点抖动打断计时）。宽限期内不计时",
+      "minSessionMs": "单段短于此不计入总时长，但仍保留在分段记录里标为无效"
+    }
+  },
+
+  "exercises": {
+    "squat": {
+      "id": "squat",
+      "name": "深蹲",
+      "order": 1,
+      "category": "reps",
+      "unit": "次",
+
+      "camera": {
+        "view": "front-or-side",
+        "hint": "正对或侧对镜头，全身入镜。膝盖、踝、髋三点都要可见 —— 蹲到大腿与地面平行最准",
+        "minBodyHeightRatio": 0.5
+      },
+
+      "signals": {
+        "kneeAngle": {
+          "type": "jointAngle",
+          "chain": [23, 25, 27],
+          "side": "min",
+          "space": "world",
+          "smooth": { "minCutoff": 1.2, "beta": 0.01 }
+        },
+        "kneeAngleL": {
+          "type": "jointAngle",
+          "chain": [23, 25, 27],
+          "side": "left",
+          "space": "world"
+        },
+        "kneeAngleR": {
+          "type": "jointAngle",
+          "chain": [24, 26, 28],
+          "side": "right",
+          "space": "world"
+        },
+        "hipDrop": {
+          "type": "pointHeight",
+          "point": 23,
+          "refPoints": [27, 28],
+          "scale": "legLength",
+          "space": "image"
+        },
+        "torsoLean": { "type": "torsoLean" }
+      },
+
+      "primary": "kneeAngle",
+
+      "fsm": {
+        "signal": "kneeAngle",
+        "cycle": ["stand", "bottom"],
+        "phases": {
+          "stand": { "enter": { "gte": 158 }, "label": "站立" },
+          "bottom": { "enter": { "lte": 100 }, "label": "蹲到底" }
+        },
+        "minRepMs": 400,
+        "maxRepMs": 8000,
+        "minHoldFrames": 2,
+        "lossResetMs": 500,
+        "minConfidence": 0.5,
+        "phaseMaxDwellMs": { "bottom": 1800 },
+        "guards": [
+          {
+            "signal": "torsoLean",
+            "when": "bottom",
+            "lte": 55,
+            "label": "下蹲时躯干前倾过大",
+            "severity": "warn"
+          },
+          {
+            "signal": "kneeAngle",
+            "when": "bottom",
+            "gt": 70,
+            "label": "蹲得过深（膝角过小）",
+            "severity": "info"
+          }
+        ]
+      },
+
+      "feedback": {
+        "notDeepEnough": "蹲得不够深：大腿没到与地面平行",
+        "tooFast": "动作过快，可能是抖动而非完整深蹲",
+        "tooSlow": "停留时间过长，本次未计入",
+        "lost": "目标丢失，请保证全身在画面内"
+      }
+    },
+
+    "jumping_jack": {
+      "id": "jumping_jack",
+      "name": "开合跳",
+      "order": 2,
+      "category": "reps",
+      "unit": "次",
+
+      "camera": {
+        "view": "front",
+        "hint": "正对镜头，全身入镜（头顶到脚要留余量，跳起时别出画）。正对很重要：踝距要用肩宽归一化，侧对时肩宽被透视压缩会让比值失真",
+        "minBodyHeightRatio": 0.55
+      },
+
+      "signals": {
+        "ankleSpread": {
+          "type": "spread",
+          "a": [27],
+          "b": [28],
+          "side": "left",
+          "scale": "shoulderWidth",
+          "space": "image",
+          "smooth": { "minCutoff": 1.6, "beta": 0.02 }
+        },
+        "wristHeight": {
+          "type": "pointHeight",
+          "point": 15,
+          "refPoints": [11, 12],
+          "scale": "torsoLength",
+          "space": "image"
+        },
+        "kneeAngle": {
+          "type": "jointAngle",
+          "chain": [23, 25, 27],
+          "side": "min",
+          "space": "world"
+        }
+      },
+
+      "primary": "ankleSpread",
+
+      "fsm": {
+        "signal": "ankleSpread",
+        "cycle": ["close", "open"],
+        "phases": {
+          "close": { "enter": { "lte": 0.8 }, "label": "并腿" },
+          "open": { "enter": { "gte": 1.25 }, "label": "开腿" }
+        },
+        "minRepMs": 120,
+        "maxRepMs": 4000,
+        "minHoldFrames": 2,
+        "lossResetMs": 500,
+        "minConfidence": 0.45,
+        "guards": [
+          {
+            "signal": "wristHeight",
+            "when": "open",
+            "lt": 0,
+            "label": "手臂未举过头顶（开合跳要求双手上举）",
+            "severity": "info"
+          }
+        ]
+      },
+
+      "feedback": {
+        "notEnough": "腿没打开：踝距要达到一个肩宽以上",
+        "tooFast": "节奏过快，可能是腿部抖动",
+        "tooSlow": "并腿停留过久，本次未计入",
+        "lost": "目标丢失，请保证全身在画面内（跳起时别出画）"
+      }
+    },
+
+    "pushup": {
+      "id": "pushup",
+      "name": "俯卧撑",
+      "order": 3,
+      "category": "reps",
+      "unit": "次",
+
+      "camera": {
+        "view": "side",
+        "hint": "侧拍最能看清肘角，手机横放、镜头压低到与身体同高。要拍到肩、肘、腕、髋四点。趴姿下人体横向占据画面，注意留出头部与脚的方向余量",
+        "minBodyHeightRatio": 0.25
+      },
+
+      "signals": {
+        "elbowAngle": {
+          "type": "jointAngle",
+          "chain": [11, 13, 15],
+          "side": "min",
+          "space": "world",
+          "smooth": { "minCutoff": 1.2, "beta": 0.01 }
+        },
+        "torsoTilt": {
+          "type": "torsoLean",
+          "from": "vertical"
+        },
+        "bodyLine": {
+          "type": "torsoLean",
+          "from": "horizontal"
+        }
+      },
+
+      "primary": "elbowAngle",
+
+      "fsm": {
+        "signal": "elbowAngle",
+        "cycle": ["up", "down"],
+        "phases": {
+          "up": { "enter": { "gte": 150 }, "label": "撑起" },
+          "down": { "enter": { "lte": 105 }, "label": "下降到最低点" }
+        },
+        "minRepMs": 200,
+        "maxRepMs": 6000,
+        "minHoldFrames": 2,
+        "lossResetMs": 600,
+        "minConfidence": 0.45,
+        "guards": [
+          {
+            "signal": "torsoTilt",
+            "when": "down",
+            "gte": 55,
+            "label": "躯干不够平（是否站着完成的？）",
+            "severity": "warn"
+          },
+          {
+            "signal": "elbowAngle",
+            "when": "down",
+            "lt": 100,
+            "label": "下降幅度不足（未做全程俯卧撑）",
+            "severity": "info"
+          }
+        ]
+      },
+
+      "feedback": {
+        "notEnough": "下降不够：肘角要小于 105° 才算一次完整俯卧撑",
+        "tooFast": "动作过快，可能是抖动",
+        "tooSlow": "在最低点停留过久，本次未计入",
+        "lost": "目标丢失，请让肩、肘、腕、髋都在画面内"
+      }
+    },
+
+    "situp": {
+      "id": "situp",
+      "name": "仰卧起坐",
+      "order": 4,
+      "category": "reps",
+      "unit": "次",
+
+      "camera": {
+        "view": "side",
+        "hint": "侧拍，手机横放、镜头压低到地面附近。要拍到肩、髋、膝三点。躺姿下人体横向占据画面，注意留出头部与脚的方向余量",
+        "minBodyHeightRatio": 0.25
+      },
+
+      "signals": {
+        "torsoTilt": {
+          "type": "torsoLean",
+          "from": "vertical",
+          "smooth": { "minCutoff": 1.2, "beta": 0.01 }
+        },
+        "kneeAngle": {
+          "type": "jointAngle",
+          "chain": [23, 25, 27],
+          "side": "min",
+          "space": "world"
+        },
+        "hipAngle": {
+          "type": "jointAngle",
+          "chain": [11, 23, 25],
+          "side": "min",
+          "space": "world"
+        }
+      },
+
+      "primary": "torsoTilt",
+
+      "fsm": {
+        "signal": "torsoTilt",
+        "cycle": ["lying", "up"],
+        "phases": {
+          "lying": { "enter": { "gte": 68 }, "label": "躺平" },
+          "up": { "enter": { "lte": 45 }, "label": "坐起" }
+        },
+        "minRepMs": 250,
+        "maxRepMs": 8000,
+        "minHoldFrames": 2,
+        "lossResetMs": 700,
+        "minConfidence": 0.45,
+        "phaseMaxDwellMs": { "up": 3000 },
+        "guards": [
+          {
+            "signal": "kneeAngle",
+            "when": "up",
+            "gte": 55,
+            "label": "膝盖未保持弯曲（动作不规范）",
+            "severity": "info"
+          },
+          {
+            "signal": "kneeAngle",
+            "when": "up",
+            "lte": 145,
+            "label": "膝盖伸得过直（容易借腿力）",
+            "severity": "info"
+          }
+        ]
+      },
+
+      "feedback": {
+        "notEnough": "坐起不够高：躯干与垂直轴的夹角要小于 45°",
+        "tooFast": "动作过快，可能是抖动",
+        "tooSlow": "躺下回位过慢，本次未计入",
+        "lost": "目标丢失，请让肩、髋、膝都在画面内"
+      }
+    },
+
+    "high_knee": {
+      "id": "high_knee",
+      "name": "原地高抬腿",
+      "order": 5,
+      "category": "reps",
+      "unit": "次",
+
+      "camera": {
+        "view": "front",
+        "hint": "正对镜头，全身入镜（含抬腿高度）。左右腿交替动作，需要两条腿都可见，不要侧拍",
+        "minBodyHeightRatio": 0.55
+      },
+
+      "signals": {
+        "kneeHeightL": {
+          "type": "pointHeight",
+          "point": 25,
+          "refPoints": [23, 24],
+          "scale": "torsoLength",
+          "space": "image",
+          "smooth": { "minCutoff": 1.8, "beta": 0.03 }
+        },
+        "kneeHeightR": {
+          "type": "pointHeight",
+          "point": 26,
+          "refPoints": [23, 24],
+          "scale": "torsoLength",
+          "space": "image",
+          "smooth": { "minCutoff": 1.8, "beta": 0.03 }
+        },
+        "torsoLean": { "type": "torsoLean" }
+      },
+
+      "primary": "kneeHeightL",
+
+      "channels": [
+        { "id": "L", "label": "左腿", "signal": "kneeHeightL" },
+        { "id": "R", "label": "右腿", "signal": "kneeHeightR" }
+      ],
+
+      "fsm": {
+        "signal": "kneeHeightL",
+        "cycle": ["down", "up"],
+        "phases": {
+          "down": { "enter": { "gte": 0.32 }, "label": "落地" },
+          "up": { "enter": { "lte": -0.04 }, "label": "抬起（膝高于髋）" }
+        },
+        "minRepMs": 100,
+        "maxRepMs": 2500,
+        "minHoldFrames": 1,
+        "lossResetMs": 400,
+        "minConfidence": 0.4,
+        "guards": [
+          {
+            "signal": "torsoLean",
+            "when": "up",
+            "lte": 30,
+            "label": "上身前倾过大",
+            "severity": "info"
+          }
+        ]
+      },
+
+      "feedback": {
+        "notEnough": "抬得不够高：计数口径是「膝盖高于髋」，要抬到大腿超过水平",
+        "tooFast": "频率过快，可能是腿部抖动而非完整抬腿",
+        "tooSlow": "落地停留过久，本次未计入",
+        "lost": "目标丢失，请保证两条腿都在画面内"
+      }
+    },
+
+    "horse_stance": {
+      "id": "horse_stance",
+      "name": "马步",
+      "order": 6,
+      "category": "hold",
+      "unit": "秒",
+
+      "camera": {
+        "view": "front-or-side",
+        "hint": "正对或侧对，全身入镜。膝角与躯干直立度都要看得清 —— 两条膝、两条踝、两肩、两髋都在画面内最准",
+        "minBodyHeightRatio": 0.5
+      },
+
+      "signals": {
+        "kneeAngle": {
+          "type": "jointAngle",
+          "chain": [23, 25, 27],
+          "side": "min",
+          "space": "world",
+          "smooth": { "minCutoff": 1.0, "beta": 0.008 }
+        },
+        "torsoLean": { "type": "torsoLean" }
+      },
+
+      "primary": "kneeAngle",
+
+      "hold": {
+        "conditions": [
+          { "signal": "kneeAngle", "gte": 78, "lte": 132, "label": "膝角在 78°–132°（大腿接近水平）" },
+          { "signal": "torsoLean", "lte": 28, "label": "躯干保持直立" }
+        ],
+        "minHoldMs": 500,
+        "breakGraceMs": 500,
+        "minSessionMs": 1500,
+        "minConfidence": 0.5
+      },
+
+      "feedback": {
+        "idle": "尚未进入马步姿势",
+        "pending": "姿势已识别，保持稳定…",
+        "holding": "计时中，保持住",
+        "grace": "姿势偏离，即将中断",
+        "done": "本次计时已记录"
+      }
+    },
+
+    "wall_sit": {
+      "id": "wall_sit",
+      "name": "靠墙静蹲",
+      "order": 7,
+      "category": "hold",
+      "unit": "秒",
+
+      "camera": {
+        "view": "side",
+        "hint": "侧拍，镜头压低到大腿高度，**墙面要入镜**（便于人工确认背是贴着的）。计时起点是「贴上墙且膝角达标」，程序只能验证膝角与躯干直立度，是否真的贴墙请由人确认",
+        "minBodyHeightRatio": 0.5
+      },
+
+      "signals": {
+        "kneeAngle": {
+          "type": "jointAngle",
+          "chain": [23, 25, 27],
+          "side": "min",
+          "space": "world",
+          "smooth": { "minCutoff": 1.0, "beta": 0.008 }
+        },
+        "torsoLean": { "type": "torsoLean" }
+      },
+
+      "primary": "kneeAngle",
+
+      "hold": {
+        "conditions": [
+          { "signal": "kneeAngle", "gte": 82, "lte": 125, "label": "膝角在 82°–125°" },
+          { "signal": "torsoLean", "lte": 20, "label": "躯干贴直（贴墙姿态）" }
+        ],
+        "minHoldMs": 500,
+        "breakGraceMs": 400,
+        "minSessionMs": 1500,
+        "minConfidence": 0.5
+      },
+
+      "feedback": {
+        "idle": "尚未进入静蹲姿势（背贴墙、膝角达标才开始计时）",
+        "pending": "姿势已识别，保持稳定…",
+        "holding": "计时中，保持住",
+        "grace": "姿势偏离，即将中断",
+        "done": "本次计时已记录"
+      }
+    }
+  }
+}

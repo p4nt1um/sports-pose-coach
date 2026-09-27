@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运动姿态识别 · 体育课堂动作计数</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/></svg>">
+<style>
+  :root{--bg:#f6f7f9;--panel:#fff;--line:#e5e7eb;--ink:#16181d;--ink2:#5b6472;--ink3:#8b94a3;--brand:#2563eb}
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.7 system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+    max-width:920px;margin:0 auto;padding:56px 24px 72px;
+  }
+  h1{font-size:24px;margin:0 0 6px;letter-spacing:-.01em}
+  .lede{color:var(--ink2);margin:0 0 6px}
+  .privacy{
+    display:inline-flex;align-items:center;gap:7px;font-size:13px;color:#047857;
+    background:#ecfdf5;border:1px solid #a7f3d0;padding:4px 11px;border-radius:999px;margin-top:10px;
+  }
+  h2{font-size:13px;font-weight:650;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin:36px 0 12px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:720px){.grid{grid-template-columns:1fr}}
+  a.card{
+    display:block;text-decoration:none;color:inherit;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;padding:16px 18px;transition:.14s;
+  }
+  a.card:hover{border-color:#bfd3ff;box-shadow:0 4px 16px rgba(37,99,235,.08);transform:translateY(-1px)}
+  .card h3{margin:0 0 6px;font-size:16px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .card p{margin:0;font-size:13.5px;color:var(--ink2)}
+  .tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:#eff4ff;color:#2563eb}
+  .tag.done{background:#ecfdf5;color:#047857}
+  .tag.wait{background:#f2f4f8;color:#8b94a3}
+  div.card{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+    border-style:dashed;
+  }
+  div.card h3{color:var(--ink2)}
+  .foot{margin-top:40px;font-size:13px;color:var(--ink3);border-top:1px solid var(--line);padding-top:16px}
+  code{font:12.5px ui-monospace,Menlo,Consolas,monospace;background:#f2f4f8;padding:1px 5px;border-radius:5px}
+</style>
+</head>
+<body>
+
+<h1>运动姿态识别 · 体育课堂动作计数</h1>
+<p class="lede">用普通摄像头在浏览器里实时识别动作，自动计数与计时。全部在本机运行，不需要联网。</p>
+<div class="privacy"><span>●</span> 视频不出本机：无上传接口，不落盘录像</div>
+
+<h2>现在可用</h2>
+<div class="grid">
+  <a class="card" href="v1-counter.html">
+    <h3>上课用：动作计数 <span class="tag done">M3</span></h3>
+    <p>老师上课直接用的页面。深蹲、开合跳、俯卧撑、仰卧起坐、原地高抬腿自动计数；
+       马步、靠墙静蹲计时。<b>直接复用调试台调好的参数</b>，含成绩记录、CSV 导出与语音播报。</p>
+  </a>
+  <a class="card" href="m1-engine-check.html">
+    <h3>引擎验证 <span class="tag done">M1 已完成</span></h3>
+    <p>确认摄像头与关键点质量。能看到骨架、关节角度、人体尺度与推理耗时。
+       第一次使用建议先看这一页 —— 骨架不稳的话，后面计数不会准。</p>
+  </a>
+  <a class="card" href="tools/tune.html">
+    <h3>参数调试台 <span class="tag done">M2 已完成</span></h3>
+    <p>对着真人或视频调计数标准：实时信号曲线、迟滞带、阈值滑块，改完立刻
+       按已缓存的信号重算，不必重做动作。支持全部 7 个动作，高抬腿按左右腿
+       分两条通道。<b>调好的参数会自动保存在本机，下次打开自动载入</b>；
+       也可备份成文件带到别的电脑。</p>
+  </a>
+</div>
+
+<h2>开发中</h2>
+<div class="grid">
+  <div class="card">
+    <h3>班级成绩与趋势 <span class="tag wait">M4</span></h3>
+    <p>在单次成绩记录之上做班级成绩表、历史趋势与班级对比。</p>
+  </div>
+  <div class="card">
+    <h3>投篮姿势评分 <span class="tag wait">M5</span></h3>
+    <p>可解释的运动学评分：不说「78 分」，说「扣 8 分，肘外翻 23°」。
+       含引体向上（需特定机位）。</p>
+  </div>
+  <div class="card">
+    <h3>多人同屏 <span class="tag wait">M7</span></h3>
+    <p>双人同屏无感测试，彩色号坎识别身份，空间分区泳道，结果板与排行。</p>
+  </div>
+</div>
+
+<div class="foot">
+  规划与评审记录见 <code>PLAN.md</code>，使用说明见 <code>README.md</code>。<br>
+  页面必须通过本地服务打开（双击 <code>启动.bat</code>），直接双击 HTML 文件无法运行 ——
+  浏览器会拦掉 WASM 加载与摄像头权限。
+</div>
+
+</body>
+</html>

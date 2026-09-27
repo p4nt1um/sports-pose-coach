@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运动计数 · 运动姿态识别</title>
+<!-- 必须在任何模块之前：拦住 MediaPipe 内置的境外使用统计上报 -->
+<script src="shared/offline-guard.js"></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f766e'/></svg>">
+<style>
+  :root{
+    --bg:#f4f6f8; --panel:#fff; --line:#e3e7ec; --ink:#14171c; --ink2:#5a6472; --ink3:#8a93a2;
+    --brand:#0f766e; --brand2:#115e59;
+    --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
+    --radius:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  header{
+    flex:0 0 auto;display:flex;align-items:center;gap:14px;padding:10px 18px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;
+  }
+  .back{text-decoration:none;color:var(--ink3);font-size:16px}
+  .title{font-weight:600;font-size:16px;white-space:nowrap}
+  .pick{display:flex;align-items:center;gap:8px;margin-left:4px}
+  .pick select{
+    font:inherit;font-size:16px;font-weight:600;padding:7px 12px;border-radius:9px;
+    border:1px solid var(--line);background:#fff;color:var(--ink);
+  }
+  .pick .mode{font-size:12px;color:var(--ink3)}
+  .spacer{flex:1}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap}
+  button{
+    font:inherit;font-size:14px;padding:8px 15px;border-radius:9px;cursor:pointer;
+    border:1px solid var(--line);background:#fff;color:var(--ink);
+  }
+  button:hover{background:#f3f6f9}
+  button.primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+  button.primary:hover{background:var(--brand2)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 380px;min-height:0}
+  .stage{position:relative;margin:14px;border-radius:var(--radius);overflow:hidden;background:#0d1117;min-height:0}
+  .stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .stage canvas{position:absolute;inset:0;width:100%;height:100%}
+  .exlabel{
+    position:absolute;left:20px;top:18px;color:#fff;font-size:20px;font-weight:600;
+    text-shadow:0 2px 10px rgba(0,0,0,.7);
+  }
+  .exlabel .tag{font-size:12px;font-weight:400;opacity:.85;margin-left:8px}
+  .readout{
+    position:absolute;left:0;right:0;bottom:0;padding:24px 26px;
+    background:linear-gradient(to top,rgba(6,10,15,.88),rgba(6,10,15,.45) 62%,transparent);
+    display:flex;align-items:flex-end;gap:28px;
+  }
+  .num{
+    font-size:104px;font-weight:700;line-height:.92;color:#fff;
+    font-variant-numeric:tabular-nums;letter-spacing:-3px;
+    text-shadow:0 3px 18px rgba(0,0,0,.55);
+  }
+  .num small{font-size:30px;font-weight:600;opacity:.7;margin-left:8px;letter-spacing:0}
+  .num.hold{color:#5eead4}
+  .subinfo{display:flex;flex-direction:column;gap:2px;padding-bottom:8px}
+  .subinfo .k{font-size:12px;color:#9fb0c0}
+  .subinfo .v{font-size:19px;color:#fff;font-weight:600;font-variant-numeric:tabular-nums}
+  .chanrow{display:flex;gap:16px;margin-top:2px}
+  .chanrow span{font-size:13px;color:#9fb0c0}
+  .chanrow b{color:#fff;font-size:16px;margin-left:3px}
+  .holdbar{
+    position:absolute;left:26px;top:64px;right:26px;height:6px;border-radius:3px;
+    background:rgba(255,255,255,.18);overflow:hidden;display:none;
+  }
+  .holdbar i{display:block;height:100%;background:#5eead4;width:0;transition:width .1s linear}
+  .badge{
+    position:absolute;right:20px;top:18px;font-size:13px;padding:6px 13px;border-radius:999px;
+    background:rgba(255,255,255,.93);font-weight:600;
+  }
+  aside{
+    border-left:1px solid var(--line);background:var(--panel);overflow-y:auto;
+    padding:14px;display:flex;flex-direction:column;gap:12px;min-height:0;
+  }
+  .card{border:1px solid var(--line);border-radius:var(--radius);padding:13px}
+  .card h3{margin:0 0 9px;font-size:13.5px;font-weight:650;display:flex;align-items:center;gap:7px}
+  .card h3 .tag{font-weight:400;font-size:11.5px;color:var(--ink3)}
+  .muted{color:var(--ink3);font-size:13px}
+  .err{color:var(--danger);font-size:13px}
+  .okline{color:#047857;font-size:13px;font-weight:600}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:13px}
+  .kv .k{color:var(--ink3)}
+  .kv .v{font-variant-numeric:tabular-nums;text-align:right}
+  .fb{
+    font-size:13.5px;padding:9px 11px;border-radius:9px;margin-top:7px;line-height:1.55;
+    background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
+  }
+  .fb.info{background:#eff6ff;border-color:#bfdbfe;color:#1e40af}
+  .fb.good{background:#ecfdf5;border-color:#a7f3d0;color:#047857}
+  .fb.bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+  .statechip{
+    display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:4px 11px;
+    border-radius:999px;font-weight:600;
+  }
+  .statechip i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  table.rec{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.rec th{text-align:left;color:var(--ink3);font-weight:400;padding:3px 0;border-bottom:1px solid var(--line)}
+  table.rec td{padding:3px 0;border-bottom:1px dashed var(--line);font-variant-numeric:tabular-nums}
+  table.rec td.n{text-align:right;font-weight:650}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  .row:last-child{margin-bottom:0}
+  label.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2);cursor:pointer}
+  label.chk .mini{font-size:11.5px;color:var(--ink3)}
+  table.guide{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.guide td{padding:3px 0;border-bottom:1px dashed var(--line);vertical-align:top}
+  table.guide td.t{color:var(--ink3);white-space:nowrap;padding-right:8px;font-variant-numeric:tabular-nums}
+  table.guide td.s{color:#b45309}
+  table.guide td.s.count{color:var(--ink3)}
+  table.guide td.s.hold{color:#0e7490}
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{border:0;border-radius:0;padding:7px 12px;font-size:13px;background:#fff}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.on{background:var(--brand);color:#fff}
+  .warnrow{
+    font-size:12.5px;padding:8px 10px;border-radius:8px;background:#fffbeb;
+    border:1px solid #fde68a;color:#92400e;line-height:1.55;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="back" href="index.html" title="返回首页">←</a>
+  <div class="title">运动计数</div>
+  <div class="pick">
+    <select id="selExercise"></select>
+    <span class="mode" id="exMode"></span>
+  </div>
+  <div class="spacer"></div>
+  <div class="btnrow">
+    <button id="btnStart" class="primary">打开摄像头</button>
+    <button id="btnStop" disabled>停止</button>
+    <button id="btnZero">清零</button>
+  </div>
+</header>
+
+<main>
+  <section class="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div class="exlabel" id="exLabel">—</div>
+    <div class="holdbar" id="holdBar"><i></i></div>
+    <div class="badge" id="badge">未启动</div>
+    <div class="readout">
+      <div class="num" id="bigNum">0</div>
+      <div class="subinfo">
+        <span class="k" id="subLabel">计数</span>
+        <span class="v" id="subValue">—</span>
+        <div class="chanrow" id="chanRow"></div>
+      </div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h3>机位要求<span class="tag" id="hintTag"></span></h3>
+      <div class="muted" id="cameraHint" style="line-height:1.65"></div>
+    </div>
+
+    <div class="card">
+      <h3>刚刚这一次</h3>
+      <div id="fbList"><div class="muted">还没有完成动作。</div></div>
+    </div>
+
+    <div class="card">
+      <h3>状态<span class="tag">为什么没计数</span></h3>
+      <div class="row"><span id="stateChip"></span></div>
+      <div class="kv">
+        <span class="k">当前信号值</span><span class="v" id="diagValue">—</span>
+        <span class="k">抖动被丢弃</span><span class="v" id="diagFast">0</span>
+        <span class="k">停住被丢弃</span><span class="v" id="diagSlow">0</span>
+        <span class="k">半程被拒绝</span><span class="v" id="diagPartial">0</span>
+        <span class="k">检测到人</span><span class="v" id="diagPose">—</span>
+        <span class="k">推理耗时</span><span class="v" id="diagInfer">—</span>
+      </div>
+      <div id="holdConds"></div>
+    </div>
+
+    <div class="card">
+      <h3>本次成绩<span class="tag">可以导出</span></h3>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="chkVoice"> 语音播报<span class="mini">报结果 · 每 5 次</span></label>
+      </div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="chkGuide"> 语音指导<span class="mini">报原因 · 动作不合格时</span></label>
+      </div>
+      <div class="muted" style="font-size:12px;line-height:1.55;margin-bottom:8px">
+        两个开关各自独立，默认都关。同时打开时共用一条语音通道，同一次动作只出一次声：指导优先，数字让位。
+        勾选状态会记住，下次打开沿用。
+      </div>
+      <div class="row">
+        <button id="btnRecord">记录当前成绩</button>
+        <button id="btnCsv">导出 CSV</button>
+        <button id="btnClearRec">清空记录</button>
+      </div>
+      <div id="recList"><div class="muted">还没有记录。</div></div>
+    </div>
+
+    <div class="card">
+      <h3>语音指导日志<span class="tag">最近说过什么</span></h3>
+      <div id="guideLog"><div class="muted">还没有播报。勾选「语音指导」后，动作不合格时会在这里留痕。</div></div>
+    </div>
+
+    <div class="card">
+      <h3>参数<span class="tag">来自调试台</span></h3>
+      <div id="paramNote" class="muted"></div>
+      <div class="row" style="margin-top:8px">
+        <a href="tools/tune.html" style="font-size:13px">去参数调试台调整 →</a>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+// 本页在项目根目录，共享模块在 ./shared/（tools/ 下那一页才用 ../shared/）
+import { PoseEngine, CameraSource } from './shared/tpc-core.js';
+import { SignalSet } from './shared/tpc-signals.js';
+import { createTracker, modeOf } from './shared/tpc-counter.js';
+import { computeLayout, resizeCanvas, drawPoses } from './shared/tpc-draw.js';
+// 与调试台共用同一份存档：老师在那页调好的阈值，这页直接生效
+import { TunedStore } from './shared/tpc-store.js';
+// 语音指导：把判定结果翻成一句人话，并把「播报」与「指导」排进同一条语音通道
+import { guideTextOf, guideForHold, GuideSpeaker } from './shared/tpc-guide.js';
+
+const VENDOR = '/vendor/';
+const REC_KEY = 'spc.records.v1';
+const VOICE_KEY = 'spc.voice.v1';
+
+const el = (id) => document.getElementById(id);
+const video = el('video');
+const overlay = el('overlay');
+const overlayCtx = overlay.getContext('2d');
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+));
+const fmt = (v, d = 1) => (v === null || v === undefined || !isFinite(v) ? '—' : Number(v).toFixed(d));
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const deep = (o) => JSON.parse(JSON.stringify(o));
+
+let CFG_ALL = null;
+let EX = null;
+let FILE_DEFAULTS = null;
+let appliedCustom = 0;          // 当前动作套用了多少项自定义参数
+let store = null;
+
+let signalSet = null;
+let tracker = null;
+let engine = null;
+let camera = null;
+let running = false;
+let poseCount = 0;
+let lastInferMs = null;
+let lastSpokenAt = 0;
+let uiTimer = null;
+
+/* ============================ 成绩记录 ============================ */
+
+function loadRecords() {
+  try {
+    const raw = localStorage.getItem(REC_KEY);
+    const o = raw ? JSON.parse(raw) : null;
+    return o && typeof o === 'object' ? o : [];
+  } catch (e) { return []; }
+}
+function saveRecords(list) {
+  try { localStorage.setItem(REC_KEY, JSON.stringify(list.slice(-200))); }
+  catch (e) { /* 隐私模式：静默放弃，不打断上课 */ }
+}
+let records = loadRecords();
+
+function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function renderRecords() {
+  const host = el('recList');
+  if (!records.length) { host.innerHTML = '<div class="muted">还没有记录。</div>'; return; }
+  const rows = records.slice(-8).reverse().map((r) => {
+    const val = r.mode === 'hold' ? (r.ms / 1000).toFixed(1) + 's' : r.count + ' 次';
+    const flag = r.flags && r.flags ? '<span style="color:#b45309;font-size:11.5px"> · ' + esc(r.flags) + '</span>' : '';
+    return '<tr><td>' + esc(r.at) + '</td><td>' + esc(r.name) + '</td><td class="n">' + val + '</td></tr>' +
+      (flag ? '<tr><td colspan="3" style="border:0;padding:0 0 4px">' + flag + '</td></tr>' : '');
+  }).join('');
+  host.innerHTML = '<table class="rec"><thead><tr><th>时间</th><th>动作</th><th style="text-align:right">成绩</th></tr></thead><tbody>' +
+    rows + '</tbody></table>';
+}
+
+function recordNow(auto) {
+  const s = tracker ? tracker.snapshot() : null;
+  if (!s) return;
+  const hold = modeOf(EX) === 'hold';
+  const val = hold ? s.totalMs : s.count;
+  if (!hold && !val) { flash('还没有计数，没什么可记录的'); return; }
+  if (hold && !val) { flash('还没有有效计时，没什么可记录的'); return; }
+
+  let flags = '';
+  if (!hold && s.lastRep && s.lastRep.flags && s.lastRep.flags.length) {
+    flags = s.lastRep.flags.map((f) => f.label).join('；');
+  }
+  records.push({
+    at: stamp(),
+    id: EX.id,
+    name: EX.name,
+    mode: modeOf(EX),
+    count: hold ? null : val,
+    ms: hold ? val : null,
+    flags,
+  });
+  saveRecords(records);
+  renderRecords();
+  flash(hold ? '已记录：' + (val / 1000).toFixed(1) + ' 秒' : '已记录：' + val + ' 次');
+}
+
+function exportCsv() {
+  if (!records.length) { flash('还没有可导出的记录'); return; }
+  const head = '时间,动作,模式,计数,时长(秒),动作质量提示';
+  const lines = records.map((r) => [
+    r.at, r.name, r.mode === 'hold' ? '计时' : '计数',
+    r.count == null ? '' : r.count,
+    r.ms == null ? '' : (r.ms / 1000).toFixed(1),
+    (r.flags || '').replace(/,/g, '，'),
+  ].join(','));
+  const csv = '\uFEFF' + [head].concat(lines).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '运动成绩_' + stamp().replace(/[-: ]/g, '') + '.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/* ============================ 语音 ============================ */
+/*
+ * 两个开关分工不同，这是「不冲突、不重复」的实现要点：
+ *   #chkVoice  语音播报 —— 报**结果**：每 5 次报个数字；计时段结束报「完成 N 秒」
+ *   #chkGuide  语音指导 —— 报**原因**：动作被判不合格时，一句话说清错在哪
+ *
+ * 它们监听的是不同事件，但会撞在同一时刻（第 5 次刚好做错）。
+ * 撞车时只让指导出声、数字让位 —— 纠正晚一秒就没用了，而数字下一轮还会再报。
+ * 物理上由 speaker 的串行队列保证「同一时刻只有一条」：
+ * 否则两个功能各自调 speechSynthesis.cancel()，两句话都只剩半截。
+ */
+
+/** 开关状态存本地。首次打开默认都是关的，但勾过之后就记住 —— 老师不用每节课重勾 */
+function loadVoicePrefs() {
+  try {
+    const o = JSON.parse(localStorage.getItem(VOICE_KEY) || '{}');
+    return { voice: !!o.voice, guide: !!o.guide };
+  } catch (e) { return { voice: false, guide: false }; }
+}
+
+function saveVoicePrefs() {
+  try {
+    localStorage.setItem(VOICE_KEY, JSON.stringify({
+      voice: el('chkVoice').checked,
+      guide: el('chkGuide').checked,
+    }));
+  } catch (e) { /* 隐私模式：本次会话内仍然生效，只是刷新后丢 */ }
+}
+
+/** 真实发声。必须保证回调一定触发 —— onend 在某些浏览器上会漏，所以补一个按字数估的兜底 */
+function realSay(text, done) {
+  try {
+    if (typeof speechSynthesis === 'undefined') { done(); return; }
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'zh-CN';
+    u.rate = 1.1;
+    let fired = false;
+    const fin = () => { if (fired) return; fired = true; done(); };
+    u.onend = fin;
+    u.onerror = fin;
+    // 兜底：中文按每字约 260ms 估，超时就当播完了，否则队列会被卡死
+    setTimeout(fin, Math.max(1200, text.length * 260 + 600));
+    speechSynthesis.speak(u);
+  } catch (e) { done(); /* 不支持就算了，不该影响计数 */ }
+}
+
+const speaker = new GuideSpeaker({
+  say: realSay,
+  cancel: () => { try { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); } catch (e) {} },
+  cooldownMs: 5000,
+});
+
+/** 语音播报：报结果。每 5 次一个数字。返回是否真的排上了 */
+function maybeSpeakResult(count, tMs) {
+  if (!el('chkVoice').checked) return false;
+  if (!(count > 0 && count % 5 === 0 && count !== lastSpokenAt)) return false;
+  // 先记账：即便这一次让位给指导，也算「这个 5 已经处理过」，
+  // 否则会在后续每一帧反复尝试，或者干脆永远丢掉。
+  lastSpokenAt = count;
+  return speaker.speak(String(count), { priority: 1, kind: 'count', atMs: tMs });
+}
+
+/**
+ * 语音日志。存在的理由是「语音说完就没了」—— 老师站在场地另一头，
+ * 学生听没听清、系统到底报了什么，事后无从复盘。留一张表就能对着看。
+ */
+const guideLog = [];
+
+function guideLogPush(text, kind) {
+  guideLog.unshift({ at: stamp(), text, kind });
+  if (guideLog.length > 12) guideLog.pop();
+  renderGuideLog();
+}
+
+function renderGuideLog() {
+  const host = el('guideLog');
+  if (!guideLog.length) {
+    host.innerHTML = '<div class="muted">还没有播报。勾选「语音指导」后，动作不合格时会在这里留痕。</div>';
+    return;
+  }
+  const rows = guideLog.map((g) => {
+    const cls = g.kind === 'count' ? ' count' : (g.kind === 'hold_break' || g.kind === 'hold_short' ? ' hold' : '');
+    const tag = g.kind === 'count' ? '播报' : '指导';
+    return '<tr><td class="t">' + esc(g.at) + '</td><td class="s' + cls + '">' + tag + '：' + esc(g.text) + '</td></tr>';
+  }).join('');
+  host.innerHTML = '<table class="guide"><tbody>' + rows + '</tbody></table>';
+}
+
+/* ============================ 加载动作 ============================ */
+
+function exerciseList() {
+  return Object.values(CFG_ALL.exercises).sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+function buildPicker() {
+  const sel = el('selExercise');
+  sel.innerHTML = '';
+  for (const ex of exerciseList()) {
+    const o = document.createElement('option');
+    o.value = ex.id;
+    o.textContent = ex.name + '（' + (ex.category === 'hold' ? '计时' : '计数') + '）';
+    sel.appendChild(o);
+  }
+}
+
+async function loadExercise(id) {
+  stopAll();
+  el('selExercise').value = id;
+  FILE_DEFAULTS = deep(CFG_ALL.exercises[id]);
+  EX = deep(CFG_ALL.exercises[id]);
+
+  // ★ 复用调试台调好的参数 —— 两页共用 spc.tuned.<id>
+  appliedCustom = 0;
+  const rec = store.load(id);
+  if (rec) {
+    const rep = store.restore(EX, rec, FILE_DEFAULTS);
+    appliedCustom = rep.applied.length;
+  }
+
+  signalSet = new SignalSet(EX.signals);
+  tracker = createTracker(EX);
+  poseCount = 0;
+  lastSpokenAt = 0;
+  // 换了动作，上一句纠正就过期了 —— 而且上个动作的原因放到新动作上会误导
+  speaker.reset();
+
+  const hold = modeOf(EX) === 'hold';
+  el('exMode').textContent = hold ? '计时' : '计数';
+  el('exLabel').innerHTML = esc(EX.name) + '<span class="tag">' + (hold ? '按保持时长计时' : '自动计数') + '</span>';
+  el('cameraHint').textContent = EX.camera.hint || '';
+  el('hintTag').textContent = EX.camera.view ? '（' + EX.camera.view + '）' : '';
+  el('bigNum').className = 'num' + (hold ? ' hold' : '');
+  el('holdBar').style.display = hold ? '' : 'none';
+  el('subLabel').textContent = hold ? '当前段 / 累计' : '完成段';
+  el('chanRow').innerHTML = '';
+
+  el('paramNote').innerHTML = appliedCustom
+    ? '<span class="okline">已套用 ' + appliedCustom + ' 项调试台自定义参数</span><br>' +
+      '（' + esc(rec.savedAtText || '') + ' 保存）'
+    : '使用 data/exercises.json 里的默认参数。想让阈值更贴合本校标准，去调试台对着真人调一次。';
+
+  renderAll();
+}
+
+/* ============================ 引擎 ============================ */
+
+async function start() {
+  el('btnStart').disabled = true;
+  try {
+    stopAll();
+    camera = new CameraSource(video);
+    await camera.start();
+    el('badge').textContent = video.videoWidth + '×' + video.videoHeight;
+
+    engine = new PoseEngine({
+      vendorBase: VENDOR,
+      model: 'full',
+      numPoses: 1,
+      targetFps: 30,
+      smoothing: true,
+      onFrame: onFrame,
+      onError: (e) => { console.error(e); el('badge').textContent = '推理错误'; },
+    });
+    el('badge').textContent = '引擎加载中';
+    await engine.load();
+    engine.start(video);
+    running = true;
+    el('btnStop').disabled = false;
+    el('badge').textContent = (engine.delegateInUse === 'GPU' ? 'GPU' : 'CPU') + ' · 运行中';
+    startUiLoop();
+  } catch (e) {
+    el('badge').textContent = '启动失败';
+    el('cameraHint').innerHTML = '<span class="err">' + esc(e && e.message ? e.message : e) + '</span>';
+  } finally {
+    el('btnStart').disabled = false;
+  }
+}
+
+function stopAll() {
+  if (engine) { try { engine.close(); } catch (e) { /* 忽略 */ } engine = null; }
+  if (camera) { try { camera.stop(); } catch (e) { /* 忽略 */ } camera = null; }
+  running = false;
+  if (uiTimer) { cancelAnimationFrame(uiTimer); uiTimer = null; }
+  el('btnStop').disabled = true;
+  // 计时动作：停止时把进行中的那一段结账，否则它永远不会进 totalMs
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  renderAll();
+}
+
+/** 独立于推理帧率的界面刷新：让计时读数看起来是连续走的 */
+function startUiLoop() {
+  const tick = () => {
+    if (!running) return;
+    renderReadouts();
+    uiTimer = requestAnimationFrame(tick);
+  };
+  uiTimer = requestAnimationFrame(tick);
+}
+
+/**
+ * 推进一帧并处理它的「副产物」（语音、反馈面板、日志）。
+ *
+ * 抽成函数是必要的，不是洁癖：摄像头走 onFrame、自检走 feed，
+ * 两边必须是同一条路径。否则自检只能覆盖 guideTextOf 这种纯函数，
+ * 覆盖不到「开关到底生不生效」「两种语音会不会撞车」——
+ * 而这两件事恰恰是这个功能最容易坏的地方。
+ */
+function stepFrame(values, confidence, tMs) {
+  const hold = modeOf(EX) === 'hold';
+  // 注意：snapshot 里的 lastRep / sessions 是对象引用（前后是同一个对象），
+  // 必须在这一帧更新之前把**数字**留下来比，否则比较恒为相等，
+  // 播报与反馈永远不会触发。
+  //   ① lastRep —— 每次走完一圈会被换成新对象，可以直接比引用；
+  //   ② sessions —— 是同一个数组（只往里 push），比长度必须先用数字固定住。
+  //     这里踩过一次：重构时图省事留了整个快照，计时类的语音指导从此全哑，
+  //     而且不报错。自检里那条「中途散过要念出原因」就是为了防它复发。
+  const before = tracker.snapshot();
+  const beforeSessions = hold ? before.sessions.length : 0;
+
+  tracker.update({ values, confidence, tMs });
+  const after = tracker.snapshot();
+  const guideOn = el('chkGuide').checked;
+
+  if (!hold) {
+    // 触发条件用「lastRep 是否换了一个对象」，而不是「count 是否变大」。
+    // count 只在计数成功时才涨，而被拒绝（太快 / 停住 / 半程）的那一次
+    // 恰恰不涨 —— 那正是学生最需要听到原因的时候。用 count 判断会把这一类全漏掉。
+    if (after.lastRep !== before.lastRep) {
+      renderFeedback(after);
+      const g = guideTextOf(after.lastRep);          // 先算出「该说什么」，与开关无关
+      // 判据用「该不该说」而不是「有没有说出去」：否则指导处在冷却期时，
+      // 数字会漏出来，变成「有时报、有时不报」的不确定行为。
+      const guideWanted = !!(g && guideOn);
+      if (guideWanted && speaker.speak(g.text, { priority: 2, kind: g.kind, atMs: tMs })) {
+        guideLogPush(g.text, g.kind);
+      }
+      // 这一次既然有不合格原因要说，就不报数字 —— 同一次动作只出一次声
+      if (!guideWanted && maybeSpeakResult(after.count, tMs)) {
+        guideLogPush(String(after.count), 'count');
+      }
+    }
+  } else if (after.sessions.length > beforeSessions) {
+    const s = after.sessions[after.sessions.length - 1];
+    renderFeedback(after);
+    const g = guideForHold(s, after.checks);
+    const guideWanted = !!(g && guideOn);
+    if (guideWanted && speaker.speak(g.text, { priority: 2, kind: g.kind, atMs: tMs })) {
+      guideLogPush(g.text, g.kind);
+    }
+    if (!guideWanted && s.valid && el('chkVoice').checked) {
+      const text = '完成 ' + (s.ms / 1000).toFixed(0) + ' 秒';
+      if (speaker.speak(text, { priority: 1, kind: 'count', atMs: tMs })) guideLogPush(text, 'count');
+    }
+  }
+  return after;
+}
+
+function onFrame(res) {
+  const pose = res.poses && res.poses[0] ? res.poses[0] : null;
+  poseCount = res.poses ? res.poses.length : 0;
+  lastInferMs = res.inferenceMs;
+
+  let values = {};
+  let confidence = {};
+  if (pose) {
+    const sv = signalSet.evaluate(pose, res.timestampMs);
+    values = sv.values;
+    confidence = sv.confidence;
+  } else {
+    for (const n of Object.keys(EX.signals)) { values[n] = null; confidence[n] = 0; }
+  }
+
+  stepFrame(values, confidence, res.timestampMs);
+  el('badge').textContent = (engine && engine.delegateInUse === 'GPU' ? 'GPU' : 'CPU') + ' · 运行中';
+  drawOverlay(pose);
+}
+
+/* ============================ 渲染 ============================ */
+
+const PHASE_COLORS = ['#10b981', '#f59e0b', '#8b5cf6', '#0891b2'];
+function phaseStyle(p) {
+  if (!EX) return { color: '#9ca3af', label: '未识别' };
+  const hold = modeOf(EX) === 'hold';
+  if (hold) {
+    const m = {
+      idle: ['#9ca3af', '未进入姿势'],
+      pending: ['#f59e0b', '稳定判定中…'],
+      holding: ['#10b981', '计时中'],
+      grace: ['#ef4444', '即将中断'],
+    };
+    const s = m[p] || m.idle;
+    return { color: s[0], label: s[1] };
+  }
+  const idx = (EX.fsm.cycle || []).indexOf(p);
+  if (idx < 0) return { color: '#9ca3af', label: '未识别' };
+  const ph = EX.fsm.phases[p];
+  return { color: PHASE_COLORS[idx % PHASE_COLORS.length], label: ph && ph.label ? ph.label : p };
+}
+
+function renderAll() {
+  renderReadouts();
+  renderFeedback(tracker ? tracker.snapshot() : null);
+}
+
+function renderReadouts() {
+  if (!tracker) return;
+  const s = tracker.snapshot();
+  const hold = modeOf(EX) === 'hold';
+
+  if (hold) {
+    el('bigNum').innerHTML = fmt(s.liveMs / 1000, 1) + '<small>秒</small>';
+    el('subValue').textContent = (s.currentMs / 1000).toFixed(1) + 's / ' + (s.totalMs / 1000).toFixed(1) + 's';
+    // 稳定期内按 pendingMs/needHoldMs 走出进度，让学生看见「再稳一点就开始计时」
+    const pct = s.holding ? 100 : (s.needHoldMs ? clamp((s.pendingMs || 0) / s.needHoldMs * 100, 0, 100) : 0);
+    el('holdBar').querySelector('i').style.width = pct + '%';
+    el('diagValue').textContent = s.checks && s.checks.length
+      ? s.checks.map((c) => c.signal + ' ' + fmt(c.value, 1)).join('　') : '—';
+    const sets = s.sessions.filter((x) => x.valid).length;
+    el('subLabel').textContent = '当前段 / 累计 · 有效 ' + sets + ' 段';
+    renderHoldConds(s);
+  } else {
+    el('holdConds').innerHTML = '';   // 从计时动作切过来时清掉条件行，别留残影
+    el('bigNum').innerHTML = s.count + '<small>次</small>';
+    if (s.multiChannel) {
+      el('chanRow').innerHTML = s.channels.map((c) => '<span>' + esc(c.label) + '<b>' + c.count + '</b></span>').join('');
+      el('subValue').textContent = '合计 ' + s.count + ' 次';
+    } else {
+      el('subValue').textContent = s.lastRep
+        ? Math.round(s.lastRep.durationMs) + 'ms' + (s.lastRep.accepted ? ' · 计入' : ' · 已剔除')
+        : '—';
+    }
+    el('diagValue').textContent = fmt(s.value, modeOf(EX) === 'hold' ? 1 : 2);
+  }
+
+  const ps = phaseStyle(hold ? s.state : s.phase);
+  el('stateChip').innerHTML = '<span class="statechip" style="background:' + ps.color + '1f;color:' + ps.color + '">' +
+    '<i style="background:' + ps.color + '"></i>' + ps.label + '</span>';
+
+  const rj = s.rejections || { too_fast: 0, too_slow: 0, partial: 0, low_conf: 0 };
+  el('diagFast').textContent = rj.too_fast;
+  el('diagSlow').textContent = rj.too_slow;
+  el('diagPartial').textContent = rj.partial;
+  el('diagPose').textContent = poseCount;
+  el('diagInfer').textContent = lastInferMs ? lastInferMs.toFixed(1) + 'ms' : '—';
+}
+
+function renderHoldConds(s) {
+  const host = el('holdConds');
+  if (!s.checks || !s.checks.length) { host.innerHTML = ''; return; }
+  const rows = s.checks.map((c) => {
+    const v = c.value === null ? '—' : (Math.abs(c.value) >= 10 ? c.value.toFixed(0) : c.value.toFixed(2));
+    return '<span class="k" style="color:' + (c.ok ? '#047857' : '#b45309') + '">' + (c.ok ? '✓ ' : '✗ ') +
+      esc(c.label) + '</span><span class="v">' + v + '</span>';
+  }).join('');
+  host.innerHTML = '<div class="kv" style="margin-top:7px">' + rows + '</div>' +
+    (s.holding ? '' : '<div class="muted" style="margin-top:5px">全部条件成立后，稳定 ' + s.needHoldMs + 'ms 才开始计时</div>');
+}
+
+function renderFeedback(s) {
+  if (!s) return;
+  const host = el('fbList');
+  const hold = modeOf(EX) === 'hold';
+
+  if (hold) {
+    const ss = (s.sessions || []).slice(-3).reverse();
+    if (!ss.length) { host.innerHTML = '<div class="muted">还没有完成的计时段。</div>'; return; }
+    host.innerHTML = ss.map((x) => '<div class="fb ' + (x.valid ? 'good' : '') + '">第 ' + x.index + ' 段：' +
+      (x.ms / 1000).toFixed(1) + ' 秒' + (x.valid ? '（有效，已计入）' : '（短于 ' + (EX.hold.minSessionMs / 1000).toFixed(1) + 's，未计入）') +
+      '</div>').join('');
+    return;
+  }
+
+  const rep = s.lastRep;
+  if (!rep) { host.innerHTML = '<div class="muted">还没有完成动作。</div>'; return; }
+  if (rep.flags && rep.flags.length) {
+    host.innerHTML = rep.flags.map((f) =>
+      '<div class="fb' + (f.severity === 'info' ? ' info' : '') + '">' + esc(f.label) +
+      (f.value != null ? '（实测 ' + Math.round(f.value * 100) / 100 + '）' : '') + '</div>').join('');
+  } else if (rep.reject) {
+    const map = {
+      too_fast: '这次太快了，像抖动，没算',
+      too_slow: '这次停留太久，没算',
+      partial: '只看到了半个动作，没算',
+      low_conf: '画面看不清，这一帧跳过了',
+    };
+    host.innerHTML = '<div class="fb bad">' + esc(map[rep.reject] || rep.reject) + '</div>';
+  } else {
+    host.innerHTML = '<div class="fb good">动作规范，已记 ' + Math.round(rep.durationMs) + 'ms</div>';
+  }
+}
+
+let flashTimer = null;
+function flash(msg) {
+  const host = el('fbList');
+  host.innerHTML = '<div class="fb info">' + esc(msg) + '</div>';
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => renderFeedback(tracker ? tracker.snapshot() : null), 1800);
+}
+
+/* ---------- 骨架 ---------- */
+
+function drawOverlay(pose) {
+  const layout = computeLayout(overlay, video);
+  resizeCanvas(overlay, video);
+  if (!pose) { overlayCtx.clearRect(0, 0, layout.cw, layout.ch); return; }
+  drawPoses(overlayCtx, [pose], layout, { mirrored: true, showPoints: false, showAngles: false });
+}
+
+/* ============================ 绑定 ============================ */
+
+el('btnStart').addEventListener('click', start);
+el('btnStop').addEventListener('click', () => { stopAll(); el('badge').textContent = '已停止'; });
+el('btnZero').addEventListener('click', () => {
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  tracker = createTracker(EX);
+  lastSpokenAt = 0;
+  speaker.reset();          // 上一组还没念完的话就此作废，别串到下一组
+  renderAll();
+  flash('已清零，可以开始下一组');
+});
+el('chkVoice').addEventListener('change', saveVoicePrefs);
+el('chkGuide').addEventListener('change', saveVoicePrefs);
+el('selExercise').addEventListener('change', (e) => {
+  loadExercise(e.target.value).catch((err) => {
+    el('cameraHint').innerHTML = '<span class="err">' + esc(err.message || err) + '</span>';
+  });
+});
+el('btnRecord').addEventListener('click', () => {
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  recordNow();
+});
+el('btnCsv').addEventListener('click', exportCsv);
+el('btnClearRec').addEventListener('click', () => {
+  records = [];
+  saveRecords(records);
+  renderRecords();
+  flash('记录已清空');
+});
+window.addEventListener('beforeunload', () => {
+  if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  speaker.reset();
+});
+
+/* ============================ 启动 ============================ */
+
+store = new TunedStore();
+
+(async function boot() {
+  const res = await fetch('data/exercises.json');
+  if (!res.ok) throw new Error('无法读取 data/exercises.json（HTTP ' + res.status + '）');
+  CFG_ALL = await res.json();
+  // 恢复上次的开关状态（首次打开两项都是关的）
+  const prefs = loadVoicePrefs();
+  el('chkVoice').checked = prefs.voice;
+  el('chkGuide').checked = prefs.guide;
+  buildPicker();
+  renderRecords();
+  renderGuideLog();
+  await loadExercise(exerciseList()[0].id);
+  window.__counter.booted = true;
+})().catch((e) => {
+  console.error(e);
+  document.body.insertAdjacentHTML('afterbegin',
+    '<div style="padding:10px 18px;background:#fef2f2;color:#b91c1c;font-size:14px">初始化失败：' +
+    esc(e && e.message ? e.message : e) + '</div>');
+});
+
+/** 自动化测试与排查用的出口 */
+window.__counter = {
+  booted: false,
+  get exerciseId() { return EX ? EX.id : null; },
+  get exerciseName() { return EX ? EX.name : null; },
+  get mode() { return EX ? modeOf(EX) : null; },
+  get exercises() { return exerciseList().map((x) => ({ id: x.id, name: x.name, mode: x.category })); },
+  get count() { return tracker ? tracker.count : 0; },
+  get readout() {
+    if (!tracker) return null;
+    const s = tracker.snapshot();
+    return {
+      mode: s.mode,
+      count: s.count,
+      phase: s.phase || null,
+      state: s.state || null,
+      value: s.value != null ? s.value : null,
+      liveMs: s.liveMs != null ? s.liveMs : null,
+      totalMs: s.totalMs != null ? s.totalMs : null,
+      sessions: s.sessions ? s.sessions.length : 0,
+      validSessions: s.sessions ? s.sessions.filter((x) => x.valid).length : 0,
+      holding: s.holding != null ? s.holding : null,
+      rejections: s.rejections || null,
+      multiChannel: !!s.multiChannel,
+      channels: s.channels ? s.channels.map((c) => ({ id: c.id, label: c.label, count: c.count })) : null,
+    };
+  },
+  /** 当前实际生效的配置（含调试台存档覆盖） */
+  get cfg() { return EX; },
+  get appliedCustom() { return appliedCustom; },
+  get records() { return records.slice(); },
+  get running() { return running; },
+  get delegate() { return engine ? engine.delegateInUse : null; },
+  setExercise: (id) => loadExercise(id),
+  /**
+   * 用合成信号直接驱动本页的追踪器与界面（无摄像头）。
+   * 走的是和摄像头完全相同的 stepFrame —— 语音指导的开关、去重、抢话
+   * 都在里面，自检因此能覆盖真实的触发链路，而不只是纯函数。
+   */
+  feed(frames) {
+    for (const f of frames) stepFrame(f.v, f.c || { main: 1 }, f.t);
+    // 结账进行中的那一段（计时类）。走 stepFrame 太麻烦 —— finalize 不是"一帧"，
+    // 但它同样会产出副产物（段结束 → 可能播报），所以手动补一次。
+    if (typeof tracker.finalize === 'function') {
+      // 与 stepFrame 同理：sessions 是同一个数组，长度必须先取成数字
+      const beforeLen = tracker.snapshot().sessions.length;
+      tracker.finalize(frames.length ? frames[frames.length - 1].t : 0);
+      const after = tracker.snapshot();
+      if (after.sessions.length > beforeLen) {
+        const s = after.sessions[after.sessions.length - 1];
+        const g = guideForHold(s, after.checks);
+        if (g && el('chkGuide').checked &&
+            speaker.speak(g.text, { priority: 2, kind: g.kind, atMs: s.endAt })) {
+          guideLogPush(g.text, g.kind);
+        }
+      }
+    }
+    renderAll();
+    return this.readout;
+  },
+  zero() { el('btnZero').click(); return this.readout; },
+  record() { el('btnRecord').click(); return records.length; },
+  clearRecords() { el('btnClearRec').click(); return records.length; },
+  csvText() {
+    const head = '时间,动作,模式,计数,时长(秒),动作质量提示';
+    return '\uFEFF' + [head].concat(records.map((r) => [
+      r.at, r.name, r.mode === 'hold' ? '计时' : '计数',
+      r.count == null ? '' : r.count,
+      r.ms == null ? '' : (r.ms / 1000).toFixed(1),
+      (r.flags || '').replace(/,/g, '，'),
+    ].join(','))).join('\r\n');
+  },
+
+  /* ---------- 语音相关（自检与排查用） ---------- */
+
+  /** 勾选状态。也能直接写：__counter.voice = true */
+  get voice() { return el('chkVoice').checked; },
+  set voice(v) { el('chkVoice').checked = !!v; saveVoicePrefs(); },
+  get guide() { return el('chkGuide').checked; },
+  set guide(v) { el('chkGuide').checked = !!v; saveVoicePrefs(); },
+  /** 本地存档原文，用来验证"勾了下次还在" */
+  voiceStoreRaw: () => { try { return localStorage.getItem(VOICE_KEY) || ''; } catch (e) { return ''; } },
+  /**
+   * 实际播出过的句子。注意它记录的是「决定播什么」——
+   * 无头环境里 speechSynthesis 不一定真出声，但排队/去重/抢话的结果都在这里。
+   */
+  get spoken() { return speaker.history.map((h) => ({ text: h.text, kind: h.kind, priority: h.priority, at: h.at })); },
+  get spokenBlocked() { return speaker.blocked; },
+  get speaking() { return speaker.speaking; },
+  get pendingSpeech() { return speaker.pending ? speaker.pending.text : null; },
+  /**
+   * 自检用：把发声换成立刻回调的桩。
+   *
+   * 为什么必须换：合成信号是**一次同步跑完几百帧**的，而真实 TTS 播完一句要一两秒。
+   * 不换桩的话，喂帧期间第一句永远「正在播」，后面的话全被压进待播槽（只留一条）
+   * —— 于是 history 里看不见它们，自检会误判成「没播」。
+   * 换桩只影响"什么时候算播完"，开关判断、冷却、优先级全在真代码里跑。
+   */
+  setStubSpeech(on) {
+    speaker.say = on ? ((text, done) => done()) : realSay;
+    return !!on;
+  },
+  guideLogText: () => el('guideLog').innerText.replace(/\s+/g, ' ').trim(),
+  /** 当前这次动作「本该」播什么原因。与开关无关，方便单独验证判定→文案的映射 */
+  guideText: () => {
+    if (!tracker) return null;
+    const s = tracker.snapshot();
+    if (modeOf(EX) === 'hold') {
+      const ss = s.sessions;
+      const g = ss.length ? guideForHold(ss[ss.length - 1], s.checks) : null;
+      return g ? g.text : null;
+    }
+    const g = guideTextOf(s.lastRep);
+    return g ? g.text : null;
+  },
+
+  paramNoteText: () => el('paramNote').innerText.replace(/\s+/g, ' ').trim(),
+  cameraHintText: () => el('cameraHint').innerText.replace(/\s+/g, ' ').trim(),
+  bigNumText: () => el('bigNum').innerText.replace(/\s+/g, ' ').trim(),
+};
+</script>
+</body>
+</html>

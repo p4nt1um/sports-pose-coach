@@ -1,0 +1,33 @@
+{
+  "name": "sports-pose-coach",
+  "version": "1.0.0",
+  "private": true,
+  "description": "浏览器 + 摄像头实时运动姿态识别：深蹲/开合跳/俯卧撑/仰卧起坐/原地高抬腿自动计数，马步/靠墙静蹲计时。全本机运行，视频不出设备。",
+  "keywords": [
+    "mediapipe",
+    "pose-estimation",
+    "pe",
+    "exercise-counter",
+    "offline"
+  ],
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node tools/serve.js",
+    "serve": "node tools/serve.js --port 4322",
+    "vendor": "node tools/fetch-vendor.js",
+    "test:fsm": "node tools/test-fsm.mjs",
+    "test:counter": "node tools/test-counter.mjs",
+    "test:store": "node tools/test-store.mjs",
+    "test:guide": "node tools/test-guide.mjs",
+    "test:node": "node tools/test-fsm.mjs && node tools/test-counter.mjs && node tools/test-store.mjs && node tools/test-guide.mjs",
+    "test:smoke": "node tools/smoke-test.js --port 4322",
+    "test:tune": "node tools/tune-test.js --port 4322",
+    "test:ui": "node tools/counter-test.js --port 4322"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.57.0"
+  }
+}
