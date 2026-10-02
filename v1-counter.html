@@ -559,8 +559,13 @@ function stepFrame(values, confidence, tMs) {
   //   ② sessions —— 是同一个数组（只往里 push），比长度必须先用数字固定住。
   //     这里踩过一次：重构时图省事留了整个快照，计时类的语音指导从此全哑，
   //     而且不报错。自检里那条「中途散过要念出原因」就是为了防它复发。
+  //
+  // ★ 计时类不能只看 sessions.length：新计时规则下「散了再回来」是同一段，
+  //   段数根本不涨 —— 若触发条件还是「段数变多」，整类计时动作的指导会永久静音，
+  //   而且和上次那个 bug 一样完全不报错。段的**结束**才是触发时机，所以比 endAt。
   const before = tracker.snapshot();
   const beforeSessions = hold ? before.sessions.length : 0;
+  const beforeLastEnd = hold && beforeSessions ? before.sessions[beforeSessions - 1].endAt : 0;
 
   tracker.update({ values, confidence, tMs });
   const after = tracker.snapshot();
@@ -584,7 +589,8 @@ function stepFrame(values, confidence, tMs) {
         guideLogPush(String(after.count), 'count');
       }
     }
-  } else if (after.sessions.length > beforeSessions) {
+  } else if (after.sessions.length > beforeSessions &&
+             after.sessions[after.sessions.length - 1].endAt !== beforeLastEnd) {
     const s = after.sessions[after.sessions.length - 1];
     renderFeedback(after);
     const g = guideForHold(s, after.checks);
@@ -631,7 +637,7 @@ function phaseStyle(p) {
       idle: ['#9ca3af', '未进入姿势'],
       pending: ['#f59e0b', '稳定判定中…'],
       holding: ['#10b981', '计时中'],
-      grace: ['#ef4444', '即将中断'],
+      paused: ['#f59e0b', '姿势散了 · 接回来继续算'],
     };
     const s = m[p] || m.idle;
     return { color: s[0], label: s[1] };
@@ -655,9 +661,20 @@ function renderReadouts() {
   if (hold) {
     el('bigNum').innerHTML = fmt(s.liveMs / 1000, 1) + '<small>秒</small>';
     el('subValue').textContent = (s.currentMs / 1000).toFixed(1) + 's / ' + (s.totalMs / 1000).toFixed(1) + 's';
-    // 稳定期内按 pendingMs/needHoldMs 走出进度，让学生看见「再稳一点就开始计时」
-    const pct = s.holding ? 100 : (s.needHoldMs ? clamp((s.pendingMs || 0) / s.needHoldMs * 100, 0, 100) : 0);
+    // 稳定期内按 pendingMs/needHoldMs 走出进度；姿势散了时改按「距本段作废还有多久」走，
+    // 让学生看见「接回来还来得及」——这条以前是「即将中断」的倒计时，现在段不会中断了，
+    // 它的含义必须跟着改，否则会误导（旧版看起来像整段要没了）。
+    let pct;
+    if (s.holding) {
+      pct = 100;
+    } else if (s.paused) {
+      const g = s.gapLimitMs ? clamp((s.gapMs || 0) / s.gapLimitMs * 100, 0, 100) : 0;
+      pct = g;
+    } else {
+      pct = s.needHoldMs ? clamp((s.pendingMs || 0) / s.needHoldMs * 100, 0, 100) : 0;
+    }
     el('holdBar').querySelector('i').style.width = pct + '%';
+    el('holdBar').querySelector('i').style.background = s.paused ? '#f59e0b' : '#5eead4';
     el('diagValue').textContent = s.checks && s.checks.length
       ? s.checks.map((c) => c.signal + ' ' + fmt(c.value, 1)).join('　') : '—';
     const sets = s.sessions.filter((x) => x.valid).length;
@@ -697,8 +714,22 @@ function renderHoldConds(s) {
     return '<span class="k" style="color:' + (c.ok ? '#047857' : '#b45309') + '">' + (c.ok ? '✓ ' : '✗ ') +
       esc(c.label) + '</span><span class="v">' + v + '</span>';
   }).join('');
-  host.innerHTML = '<div class="kv" style="margin-top:7px">' + rows + '</div>' +
-    (s.holding ? '' : '<div class="muted" style="margin-top:5px">全部条件成立后，稳定 ' + s.needHoldMs + 'ms 才开始计时</div>');
+
+  // 提示语随段的状态变。这里最容易写错的是一句「快要中断了」——
+  // 新规则下段不会因为短暂散掉而中断，说「即将中断」会把人吓着不敢调整姿势。
+  let tip = '';
+  if (s.paused) {
+    const left = Math.max(0, (s.gapLimitMs - s.gapMs) / 1000);
+    tip = '<div class="muted" style="margin-top:5px;color:#b45309">姿势散了，这段时间不计入。' +
+      '接回正确姿势就继续累加（还有 ' + left.toFixed(1) + 's 才会结算这一段）</div>';
+  } else if (!s.holding) {
+    tip = '<div class="muted" style="margin-top:5px">全部条件成立后，稳定 ' + s.needHoldMs + 'ms 才开始计时</div>';
+  }
+  const extras = [];
+  if (s.inSession && s.breaks) extras.push('本段已抖动 ' + s.breaks + ' 次');
+  const extra = extras.length ? '<div class="muted" style="margin-top:4px">' + extras.join(' · ') + '</div>' : '';
+
+  host.innerHTML = '<div class="kv" style="margin-top:7px">' + rows + '</div>' + tip + extra;
 }
 
 function renderFeedback(s) {
@@ -709,9 +740,13 @@ function renderFeedback(s) {
   if (hold) {
     const ss = (s.sessions || []).slice(-3).reverse();
     if (!ss.length) { host.innerHTML = '<div class="muted">还没有完成的计时段。</div>'; return; }
-    host.innerHTML = ss.map((x) => '<div class="fb ' + (x.valid ? 'good' : '') + '">第 ' + x.index + ' 段：' +
-      (x.ms / 1000).toFixed(1) + ' 秒' + (x.valid ? '（有效，已计入）' : '（短于 ' + (EX.hold.minSessionMs / 1000).toFixed(1) + 's，未计入）') +
-      '</div>').join('');
+    host.innerHTML = ss.map((x) => {
+      const brk = x.breaks ? '，中途散过 ' + x.breaks + ' 次' : '';
+      const tail = x.valid ? '（有效，已计入）'
+        : '（有效时长短于 ' + (EX.hold.minSessionMs / 1000).toFixed(1) + 's，未计入）';
+      return '<div class="fb ' + (x.valid ? 'good' : '') + '">第 ' + x.index + ' 段：' +
+        (x.ms / 1000).toFixed(1) + ' 秒' + tail + brk + '</div>';
+    }).join('');
     return;
   }
 
@@ -832,6 +867,13 @@ window.__counter = {
       sessions: s.sessions ? s.sessions.length : 0,
       validSessions: s.sessions ? s.sessions.filter((x) => x.valid).length : 0,
       holding: s.holding != null ? s.holding : null,
+      /** 段还在、只是暂时没保持住（自检要断言「散一下不清零」） */
+      paused: s.paused != null ? s.paused : null,
+      inSession: s.inSession != null ? s.inSession : null,
+      breaks: s.breaks != null ? s.breaks : null,
+      sessionBreaks: s.sessions && s.sessions.length ? s.sessions[s.sessions.length - 1].breaks : null,
+      gapMs: s.gapMs != null ? s.gapMs : null,
+      gapLimitMs: s.gapLimitMs != null ? s.gapLimitMs : null,
       rejections: s.rejections || null,
       multiChannel: !!s.multiChannel,
       channels: s.channels ? s.channels.map((c) => ({ id: c.id, label: c.label, count: c.count })) : null,
@@ -853,10 +895,15 @@ window.__counter = {
     for (const f of frames) stepFrame(f.v, f.c || { main: 1 }, f.t);
     // 结账进行中的那一段（计时类）。走 stepFrame 太麻烦 —— finalize 不是"一帧"，
     // 但它同样会产出副产物（段结束 → 可能播报），所以手动补一次。
+    //
+    // ★ 这里传 'auto' 而不是默认的 'finalize'：这一句结账是「合成信号喂完了」补的，
+    //   不是老师按了停止。两者都是「段结束」，但只有后者才该被当成「主动收势、
+    //   不算不合格」。传同一个 reason 会让「只保持 1 秒」这类用例永远不出声
+    //   —— 因为它被误判成手动停止，guideForHold 直接返回 null。
     if (typeof tracker.finalize === 'function') {
       // 与 stepFrame 同理：sessions 是同一个数组，长度必须先取成数字
       const beforeLen = tracker.snapshot().sessions.length;
-      tracker.finalize(frames.length ? frames[frames.length - 1].t : 0);
+      tracker.finalize(frames.length ? frames[frames.length - 1].t : 0, 'auto');
       const after = tracker.snapshot();
       if (after.sessions.length > beforeLen) {
         const s = after.sessions[after.sessions.length - 1];
@@ -871,6 +918,12 @@ window.__counter = {
     return this.readout;
   },
   zero() { el('btnZero').click(); return this.readout; },
+  /**
+   * 只推进一帧，**不结账**。自检要观察「段进行中」的状态（暂停标记、
+   * 实时读数、状态文案）时必须用它 —— feed() 末尾会补结账，中间态就看不到了。
+   * 渲染也要一起做，否则读的是上一次的快照，断言会看到过期文案。
+   */
+  step(values, confidence, tMs) { stepFrame(values, confidence, tMs); renderAll(); return this.readout; },
   record() { el('btnRecord').click(); return records.length; },
   clearRecords() { el('btnClearRec').click(); return records.length; },
   csvText() {

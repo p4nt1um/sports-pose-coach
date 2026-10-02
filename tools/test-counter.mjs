@@ -98,6 +98,42 @@ function flat(value, opts = {}) {
   return out;
 }
 
+/**
+ * 计时类的精确分段夹具：按 [{hold:ms},{brk:ms},…] 交替，时间戳从 0 严格按 dt 递增。
+ * 直接产出追踪器要的帧格式（和页面 __counter.feed 吃的一样），不经过 pack()。
+ *
+ * 为什么不沿用「flat(...) 拼接 + map 重编号」：flat 的循环条件是 t <= durationMs，
+ * 10000ms/33.333ms 会产出 301 帧而不是 300 帧，拼接时按固定 dt 重编号就会每段
+ * 多算 33ms —— 段数一多累计偏移超过 breakGraceMs / sessionGapMs，判定结果漂移，
+ * 而且这种漂移看起来像被测代码的 bug。计时断言必须用严格递增的时间轴。
+ */
+function holdPlan(opts) {
+  const { on, off, segments, fps = 30, preMs = 600, tailMs = 800 } = opts;
+  const dt = 1000 / fps;
+  const plan = [];
+  let t0 = preMs;
+  for (const s of segments) {
+    if (s.hold) { plan.push({ from: t0, to: t0 + s.hold, on: true }); t0 += s.hold; }
+    if (s.brk) { plan.push({ from: t0, to: t0 + s.brk, on: false }); t0 += s.brk; }
+  }
+  const total = t0 + tailMs;
+  const names = Object.keys(on);
+  const frames = [];
+  for (let i = 0; ; i++) {
+    const t = Math.round(i * dt);
+    if (t > total + 1e-9) break;
+    // 前导期与收尾期都算「没保持」，段内按 plan 判定
+    const onNow = t >= preMs && plan.some((p) => p.on && t >= p.from && t < p.to);
+    const src = onNow ? on : off;
+    frames.push({
+      tMs: t,
+      values: Object.assign({}, src),
+      conf: names.reduce((a, n) => { a[n] = 1; return a; }, {}),
+    });
+  }
+  return frames;
+}
+
 /** 把单条信号序列包成追踪器要的帧格式，extra 里补上 guards 用到的其它信号 */
 function pack(sig, name, extra, extraConf) {
   return sig.map((s) => ({
@@ -352,28 +388,86 @@ console.log('   配置 ' + ALL.version + '，动作 ' + Object.keys(EX).length +
   expectHold('只保持 1.2 秒（< minSessionMs 1.5s）→ 不计入总时长', cfg, hold(1200), 0, 50,
     (r) => '分段数 ' + r.snap.sessions.length + '（该段标记 valid=' + (r.snap.sessions[0] && r.snap.sessions[0].valid) + '）');
 
-  // 断续：10s + 断开 3s + 10s → 两段，合计 20s
+  // 断续：10s + 断开 3s + 10s，收尾**保持住**（学生在老师说停前一直保持）。
+  // ★ 这里是本文件最要紧的一条 —— 老规则会把断开当成「整段结束」并清空累计，
+  //   于是同一个场景记成「两段各 10s」，学生调整姿势时读数还会跳回 0。
+  //   新规则下断开只是暂停累加：段还是一段，累计接着往上走。
   {
-    const dt = 1000 / 30;
-    const seq = [].concat(
-      flat(170, { durationMs: 600 }), flat(100, { durationMs: 10000 }), flat(170, { durationMs: 3000 }),
-      flat(100, { durationMs: 10000 }), flat(170, { durationMs: 800 })
-    ).map((s, i) => ({ ...s, tMs: i * dt }));
-    expectHold('断续：保持 10s → 断开 3s → 再保持 10s → 计 20s 两段', cfg,
-      pack(seq, 'kneeAngle', { torsoLean: 10 }), 20000, 500,
-      (r) => '有效段 ' + r.snap.sessionCount + ' 段');
+    const frames = holdPlan({
+      on: { kneeAngle: 100, torsoLean: 10 }, off: { kneeAngle: 170, torsoLean: 10 },
+      segments: [{ hold: 10000 }, { brk: 3000 }, { hold: 10000 }],
+      tailMs: 0,                       // 收尾不留：最后一帧仍在保持，收势由 finalize 结账
+    });
+    const r = expectHold('★ 断续：保持 10s → 断开 3s → 再保持 10s → 仍是同一段，计 20s', cfg,
+      frames, 20000, 500,
+      (x) => '段数 ' + x.snap.sessions.length + '，段内抖动 ' + ((x.snap.sessions[0] || {}).breaks));
+    check('★ 断开期间的时间不计入（3s 断开没有变成 23s）',
+      r.snap.totalMs <= 20500 && r.snap.liveMs <= 20500,
+      'total=' + r.snap.totalMs + ' live=' + r.snap.liveMs + '（若把断开也计时会到 23000 左右）');
+    check('★ 恢复后继续累加同一段，而不是从 0 重开',
+      r.snap.sessions.length === 1 && r.snap.sessions[0].ms >= 19500,
+      '段数=' + r.snap.sessions.length + '，该段 ms=' + r.snap.sessions[0].ms);
+    check('★ 断开 3s 超过宽限 0.5s → 按一次抖动记账（用于语音指导）',
+      r.snap.sessions[0].breaks === 1, 'breaks=' + r.snap.sessions[0].breaks);
   }
 
-  // 抖动：中断 200ms 小于宽限 500ms → 仍算一段
+  // 抖动：中断 200ms 小于宽限 500ms → 不记抖动，也不结束段
   {
-    const dt = 1000 / 30;
-    const seq = [].concat(
-      flat(170, { durationMs: 600 }), flat(100, { durationMs: 5000 }), flat(170, { durationMs: 200 }),
-      flat(100, { durationMs: 5000 }), flat(170, { durationMs: 800 })
-    ).map((s, i) => ({ ...s, tMs: i * dt }));
-    expectHold('中断 200ms（小于宽限期 500ms）→ 不算断开，仍是一段', cfg,
-      pack(seq, 'kneeAngle', { torsoLean: 10 }), 10000, 500,
-      (r) => '有效段 ' + r.snap.sessionCount + ' 段');
+    const frames = holdPlan({
+      on: { kneeAngle: 100, torsoLean: 10 }, off: { kneeAngle: 170, torsoLean: 10 },
+      segments: [{ hold: 5000 }, { brk: 200 }, { hold: 5000 }],
+      tailMs: 0,
+    });
+    const r = expectHold('中断 200ms（小于宽限期 500ms）→ 不算断开，仍是一段', cfg,
+      frames, 10000, 500,
+      (x) => '段数 ' + x.snap.sessions.length + '，抖动 ' + ((x.snap.sessions[0] || {}).breaks));
+    check('宽限内的短抖不记账（它是设计上要被吃掉的）',
+      r.snap.sessions[0].breaks === 0, 'breaks=' + r.snap.sessions[0].breaks);
+  }
+
+  // 「调整一下姿势」——用户实际报的那个 bug。
+  // 反复小调整（每次只散 0.8s，在宽的 sessionGapMs 4s 内），老规则每调一次就把累计清零
+  // → 读数反复跳回一两秒。新规则下这应是**同一段**，累计 5×4s = 20s。
+  {
+    const segments = [];
+    for (let i = 0; i < 5; i++) { segments.push({ hold: 4000 }); if (i < 4) segments.push({ brk: 800 }); }
+    const frames = holdPlan({
+      on: { kneeAngle: 100, torsoLean: 10 }, off: { kneeAngle: 170, torsoLean: 10 },
+      segments, tailMs: 0,
+    });
+    const r = expectHold('★ 反复调整姿势 4 次（每次散 0.8s）→ 累计不归零，一段 20s', cfg,
+      frames, 20000, 800,
+      (x) => '段数 ' + x.snap.sessions.length + '，抖动 ' + ((x.snap.sessions[0] || {}).breaks) + ' 次');
+    check('★ 反复调整不会把成绩清零（bug 复现保护：老规则只能计到最后一段 4s）',
+      r.snap.sessions.length === 1 && r.snap.totalMs > 19000,
+      '段数=' + r.snap.sessions.length + '，totalMs=' + r.snap.totalMs +
+      '（老规则在此只剩 4000ms 左右）');
+  }
+
+  // 真收势：隔了 6 秒才回来（超过 sessionGapMs 4s）→ 该结算了，开新段
+  {
+    const frames = holdPlan({
+      on: { kneeAngle: 100, torsoLean: 10 }, off: { kneeAngle: 170, torsoLean: 10 },
+      segments: [{ hold: 6000 }, { brk: 6000 }, { hold: 6000 }],
+    });
+    expectHold('真的收势：间隔 6s（> sessionGapMs 4s）→ 结算为两段，合计 12s', cfg,
+      frames, 12000, 600,
+      (x) => '段数 ' + x.snap.sessions.length);
+  }
+
+  // 离场：断开后一直不回来 → 由 sessionGapMs 兜底结算（这里人为把 gap 调小以便快速验证）
+  {
+    const fastCfg = { ...cfg, hold: { ...cfg.hold, sessionGapMs: 1000 } };
+    const frames = holdPlan({
+      on: { kneeAngle: 100, torsoLean: 10 }, off: { kneeAngle: 170, torsoLean: 10 },
+      segments: [{ hold: 5000 }, { brk: 4000 }],
+    });
+    const r = expectHold('走开不回来：断开超过 sessionGapMs → 自动结算，不挂着涨', fastCfg,
+      frames, 5000, 300,
+      (x) => '段数 ' + x.snap.sessions.length + '，reason=' + ((x.snap.sessions[0] || {}).reason));
+    check('★ 结算之后 liveMs 不再随挂钟上涨（离场不会白送时间）',
+      r.snap.liveMs <= 5100 && r.snap.inSession === false,
+      'live=' + r.snap.liveMs + ' inSession=' + r.snap.inSession);
   }
 
   const r = run(cfg, pack(flat(100, { durationMs: 5000 }), 'kneeAngle', { torsoLean: 10 }));
@@ -411,6 +505,22 @@ console.log('   配置 ' + ALL.version + '，动作 ' + Object.keys(EX).length +
     pack(flat(140, { durationMs: 30000 }), 'kneeAngle', { torsoLean: 8 }), 0, 50);
   expectHold('膝角 70°（蹲得过深）→ 不计时', cfg,
     pack(flat(70, { durationMs: 30000 }), 'kneeAngle', { torsoLean: 8 }), 0, 50);
+
+  // 靠墙静蹲的宽限期只有 400ms（贴墙姿态对躯干角度很敏感，抖得更频繁），
+  // 也是用户实际报障的那一项 —— 这里专门压一遍「调整姿势不清零」。
+  {
+    const frames = holdPlan({
+      on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 8 },
+      segments: [{ hold: 8000 }, { brk: 600 }, { hold: 8000 }],
+    });
+    const r = expectHold('★ 靠墙静蹲：保持 8s → 起来挪一下 0.6s → 再贴回去 8s → 一段 16s', cfg,
+      frames, 16000, 500,
+      (x) => '段数 ' + x.snap.sessions.length + '，抖动 ' + ((x.snap.sessions[0] || {}).breaks));
+    check('★ 靠墙静蹲：读数不会因为一次调整而跳回零',
+      r.snap.sessions.length === 1 && r.snap.totalMs >= 15500,
+      '段数=' + r.snap.sessions.length + '，totalMs=' + r.snap.totalMs +
+      '（老规则在此只会剩下 8000）');
+  }
 }
 
 /* ============================== 8. 配置健全性 ============================== */

@@ -100,7 +100,7 @@ function holdFrames(opts) {
  * 只有这样才能验证语音指导真的会在中断时报出原因，而不是永远沉默。
  */
 function holdSegmentsFrames(opts) {
-  const { signalNames, on, off, segments, fps = 30, preMs = 900, postMs = 700 } = opts;
+  const { signalNames, on, off, segments, fps = 30, preMs = 900, postMs = 700, tailMs } = opts;
   const dt = 1000 / fps;
   const plan = [];
   let t0 = preMs;
@@ -108,15 +108,19 @@ function holdSegmentsFrames(opts) {
     if (s.hold) { plan.push({ from: t0, to: t0 + s.hold, on: true }); t0 += s.hold; }
     if (s.brk) { plan.push({ from: t0, to: t0 + s.brk, on: false }); t0 += s.brk; }
   }
+  // tailMs 显式给 0 时，最后一帧仍停在「保持」上 —— 用于验证「一直保持到老师说停」
+  const tail = tailMs === undefined ? postMs : tailMs;
   const out = [];
-  for (let t = 0; t <= t0 + postMs; t += dt) {
+  let n = 0;
+  for (let t = 0; t <= t0 + tail + 1e-9; t += dt, n++) {
     const onNow = plan.some((p) => p.on && t >= p.from && t < p.to);
     const src = onNow ? on : off;
     const v = {};
     const c = {};
-    for (const n of signalNames) { v[n] = null; c[n] = 0; }
+    for (const name of signalNames) { v[name] = null; c[name] = 0; }
     for (const k of Object.keys(src)) { v[k] = src[k]; c[k] = 1; }
-    out.push({ t: Math.round(t), v, c });
+    // 用严格递增的时间轴（不用 t 的浮点累积），避免 0.7s/8s 这类非整数周期出现 33ms 漂移
+    out.push({ t: Math.round(n * dt), v, c });
   }
   return out;
 }
@@ -130,6 +134,20 @@ async function signalsOf(page) {
 async function runFrames(page, frames) {
   await page.evaluate(() => window.__counter.zero());
   return page.evaluate((f) => window.__counter.feed(f), frames);
+}
+
+/**
+ * 逐帧喂、**不结账**，用于观察「进行中」的状态。
+ *
+ * 为什么不能复用 runFrames：它内部走 feed()，而 feed() 末尾会补一次结账
+ * （把进行中的段落账），于是「段还在不在」「暂停标记」这类断言永远看不到中间态
+ * —— 第一次写「姿势散了显示暂停」就是这么假失败的。
+ */
+async function stepwise(page, frames) {
+  return page.evaluate((f) => {
+    for (const x of f) window.__counter.step(x.v, x.c || { main: 1 }, x.t);
+    return window.__counter.readout;
+  }, frames);
 }
 
 /* ============================ 主流程 ============================ */
@@ -366,6 +384,51 @@ async function runFrames(page, frames) {
     seconds: 5,
   }));
   check('躯干只直立到 25°（未达贴墙标准 20°）→ 不计时', wsTilt.liveMs === 0, 'liveMs=' + wsTilt.liveMs);
+
+  // ★ 用户实际报的缺陷：靠墙静蹲「人只调整了一下姿势，识别到 1~2 秒就自动结束了」。
+  //   症状的根因是断开超过 breakGraceMs 就 _endSession 并清空 currentMs。
+  //   这一组断言直接压住「读数不归零、段不重开、断开不计时」三件事。
+  {
+    const frames = holdSegmentsFrames({
+      signalNames: wsSig, on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 8 },
+      segments: [{ hold: 8000 }, { brk: 700 }, { hold: 8000 }], tailMs: 0,
+    });
+    const r = await runFrames(page, frames);
+    check('★ 靠墙静蹲：保持 8s → 起来调整 0.7s → 再贴回去 8s → 仍然是一段（不被短暂散掉提前结束）',
+      r.sessions === 1 && r.validSessions === 1,
+      'sessions=' + r.sessions + '，validSessions=' + r.validSessions);
+    check('★ 恢复后继续累加，读数不归零（回归：老逻辑此处只剩 8s 左右）',
+      Math.abs(r.totalMs - 16000) <= 300, 'totalMs=' + r.totalMs + 'ms');
+    check('★ 断开的那 0.7s 没有计入（16s 没有变成 16.7s）',
+      r.totalMs <= 16200, 'totalMs=' + r.totalMs + 'ms');
+  }
+
+  // 调整姿势的**中间过程**也要能看见：暂停标记 + 累计读数不回落。
+  // 这一条必须用 stepwise 喂帧 —— feed() 末尾会补一次结账，段就没了，
+  // 断言「暂停中」会永远看不到（第一次写就是这么错的）。
+  {
+    const frames = holdSegmentsFrames({
+      signalNames: wsSig, on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 8 },
+      segments: [{ hold: 6000 }, { brk: 1200 }], tailMs: 0,
+    });
+    await page.evaluate(() => window.__counter.zero());
+    const mid = await stepwise(page, frames);
+    check('★ 姿势散了的那一刻：界面上是「暂停」而不是「中断」，段还在、读数不回落',
+      mid.inSession === true && mid.paused === true && mid.liveMs >= 5900,
+      'inSession=' + mid.inSession + ' paused=' + mid.paused + ' liveMs=' + mid.liveMs + 'ms');
+    const chip = await page.textContent('#stateChip');
+    check('状态文案说清楚「接回来继续算」，不是「即将中断」',
+      /接回来继续算/.test(chip), chip.replace(/\s+/g, ' ').trim());
+    // 接回来 → 继续累加同一段
+    const back = holdSegmentsFrames({
+      signalNames: wsSig, on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 8 },
+      segments: [{ hold: 6000 }, { brk: 1200 }, { hold: 5000 }], tailMs: 0,
+    });
+    const r = await runFrames(page, back);
+    check('★ 恢复正确姿势后继续累加同一段（11s 而不是只剩 5s）',
+      r.sessions === 1 && Math.abs(r.totalMs - 11000) <= 300,
+      'sessions=' + r.sessions + '，totalMs=' + r.totalMs + 'ms');
+  }
 
   /* ---------------- D. 参数复用（这一页最容易被写漏的接线） ---------------- */
 
@@ -664,17 +727,21 @@ async function runFrames(page, frames) {
     hShort.validSessions === 0 && h4spoken.some((s) => s.text === '时间太短，不算'),
     'validSessions=' + hShort.validSessions + '，spoken=' + JSON.stringify(h4spoken.map((s) => s.text)));
 
-  // 计时类：中途姿势散过又抖回来（断 2 次）—— 这是 hold 侧唯一能分辨的不合格特征
+  // 计时类：中途姿势散过又接回来（段内抖动 2 次）—— 这是 hold 侧唯一能分辨的不合格特征。
+  // 注意现在「抖动」的口径变了：断开不再结束段，只有断开超过 breakGraceMs 才记一次；
+  // 所以这里用两次「散够久（1.2s > 宽限 0.4s）」的抖动来触发指导。
   const hBroken = await runFrames(page, holdSegmentsFrames({
     signalNames: hHsSig, on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 2 },
-    segments: [{ hold: 2000 }, { brk: 200 }, { hold: 1500 }, { brk: 900 }],
+    segments: [{ hold: 3000 }, { brk: 1200 }, { hold: 2000 }, { brk: 1200 }, { hold: 2000 }], tailMs: 0,
   }));
   const h5spoken = await page.evaluate(() => window.__counter.spoken);
-  check('计时动作：中途散过（断 ≥2 次）→ 念出是哪条条件没保持住',
+  check('计时动作：中途散过（段内抖动 ≥2 次）→ 念出是哪条条件没保持住',
     hBroken.validSessions === 1 && h5spoken.some((s) => /没保持住/.test(s.text)),
-    'validSessions=' + hBroken.validSessions + '，spoken=' + JSON.stringify(h5spoken.map((s) => s.text)));
+    'validSessions=' + hBroken.validSessions + '，sessionBreaks=' + hBroken.sessionBreaks +
+    '，spoken=' + JSON.stringify(h5spoken.map((s) => s.text)));
 
-  // 计时类：正常结束（只断 1 次）不该被念 —— 分不清「主动站起来」与「散了」时就不猜
+  // 计时类：正常结束（收势只断 1 次，且宽限内的短抖不记账）不该被念
+  // —— 分不清「主动站起来」与「散了」时就不猜
   const hNormal = await runFrames(page, holdFrames({
     signalNames: hHsSig, on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 2 }, seconds: 5,
   }));
@@ -682,6 +749,19 @@ async function runFrames(page, frames) {
   check('计时动作：正常完成一段 → 不念原因（正常结束与散掉在数据上分不清，就不猜）',
     hNormal.validSessions === 1 && !h6spoken.some((s) => /没保持住|时间太短/.test(s.text)),
     'validSessions=' + hNormal.validSessions + '，spoken=' + JSON.stringify(h6spoken.map((s) => s.text)));
+
+  // ★ 「调整一下姿势不算完」不能变成「一直在动也不报错」：
+  //   散 3 次够久的话，指导仍然要出声 —— 否则新规则会把「抖得厉害」也放过。
+  const hManyBreaks = await runFrames(page, holdSegmentsFrames({
+    signalNames: hHsSig, on: { kneeAngle: 100, torsoLean: 8 }, off: { kneeAngle: 170, torsoLean: 2 },
+    segments: [{ hold: 2500 }, { brk: 1000 }, { hold: 2500 }, { brk: 1000 }, { hold: 2500 }, { brk: 1000 }, { hold: 2500 }],
+    tailMs: 0,
+  }));
+  const h8spoken = await page.evaluate(() => window.__counter.spoken);
+  check('★ 散了 3 次仍能识别出来（新规则不等于放过抖动）',
+    hManyBreaks.sessionBreaks >= 3 && h8spoken.some((s) => /没保持住/.test(s.text)),
+    'breaks=' + hManyBreaks.sessionBreaks + '，段数=' + hManyBreaks.sessions +
+    '，spoken=' + JSON.stringify(h8spoken.map((s) => s.text)));
 
   // 关掉指导后，计时类的不合格也不再念原因（沿用同一动作，默认最短有效段 1.5s）
   await page.evaluate(() => { window.__counter.guide = false; });

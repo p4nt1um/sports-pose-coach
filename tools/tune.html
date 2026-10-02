@@ -446,11 +446,15 @@ function buildParamSpecs(ex) {
     });
     specs.push(
       { path: 'hold.minHoldMs', label: '稳定判定 minHoldMs', min: 0, max: 3000, step: 50, unit: 'ms', dec: 0,
-        hint: '条件成立后先稳定这么久才确认开始计时（稳定期会补计）。防止过渡动作被算进去' },
-      { path: 'hold.breakGraceMs', label: '中断宽限 breakGraceMs', min: 0, max: 2000, step: 50, unit: 'ms', dec: 0,
-        hint: '条件短暂不成立多久内不算中断（抗关键点抖动）。宽限期内不计时' },
+        hint: '条件成立后先稳定这么久才确认开始计时（稳定期会补计）。防止过渡动作被算进去。同一段内散掉再恢复不重走这道闸' },
+      { path: 'hold.breakGraceMs', label: '抖动宽限 breakGraceMs', min: 0, max: 2000, step: 50, unit: 'ms', dec: 0,
+        hint: '条件短暂不成立多久内不记抖动（抗关键点抖动）。这期间不计时，但不结束段 —— 学生调整姿势不会清零' },
+      { path: 'hold.sessionGapMs', label: '结算间隔 sessionGapMs', min: 500, max: 15000, step: 100, unit: 'ms', dec: 0,
+        hint: '断开超过这么久才认定这一段结束。调小 = 稍微停一下就结算；调大 = 长时间松着也不结算' },
+      { path: 'hold.sessionTimeoutMs', label: '单段超时 sessionTimeoutMs', min: 10000, max: 600000, step: 5000, unit: 'ms', dec: 0,
+        hint: '单段最长挂多久（含断开），超时强制结算，防止离场后读数一直涨' },
       { path: 'hold.minSessionMs', label: '最短有效段 minSessionMs', min: 0, max: 10000, step: 100, unit: 'ms', dec: 0,
-        hint: '单段短于此不计入总时长，避免碎片段刷成绩' },
+        hint: '单段的有效累计短于此不计入总时长，避免碎片段刷成绩' },
       { path: 'hold.minConfidence', label: '可信度下限', min: 0.1, max: 0.9, step: 0.05, unit: '', dec: 2,
         hint: '关键点可信度低于此值时该帧不计时' },
     );
@@ -798,9 +802,12 @@ function renderDiagnostics(snap) {
       return '<span class="k">' + (c.ok ? '✓ ' : '✗ ') + esc(c.label) + '</span><span class="v">' + v + '</span>';
     }).join('');
     setHost.innerHTML = '<div class="sets" style="margin-top:8px">' + rows + '</div>' +
-      (snap.candidateSince || snap.holding
+      (snap.candidateSince || snap.inSession
         ? ''
-        : '<div class="muted" style="margin-top:4px">全部条件成立后，稳定 ' + snap.needHoldMs + 'ms 才开始计时</div>');
+        : '<div class="muted" style="margin-top:4px">全部条件成立后，稳定 ' + snap.needHoldMs + 'ms 才开始计时</div>') +
+      (snap.paused
+        ? '<div class="muted" style="margin-top:4px;color:#b45309">姿势散了，暂停累加；接回来继续算这一段的时长</div>'
+        : '');
   }
 
   const host = el('flagList');
@@ -811,7 +818,8 @@ function renderDiagnostics(snap) {
       host.innerHTML = '<div class="muted" style="margin-top:6px">共 ' + ss.length + ' 段，其中有效 ' +
         ss.filter((s) => s.valid).length + ' 段（最短有效段 ' + EX.hold.minSessionMs + 'ms）</div>' +
         ss.slice(-4).map((s) => '<div class="flag' + (s.valid ? ' ok' : '') + '">第 ' + s.index + ' 段：' +
-          (s.ms / 1000).toFixed(1) + 's' + (s.valid ? '' : '（太短，未计入）') + '</div>').join('');
+          (s.ms / 1000).toFixed(1) + 's' + (s.valid ? '' : '（太短，未计入）') +
+          (s.breaks ? '，散过 ' + s.breaks + ' 次' : '') + '</div>').join('');
     }
     return;
   }
