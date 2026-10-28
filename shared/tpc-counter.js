@@ -32,29 +32,59 @@ export function modeOf(cfg) {
  * - 单通道动作（深蹲等）：一个 id='main' 的默认通道，直接取 cfg.fsm
  * - 多通道动作：cfg.channels[].signal 指定各通道信号，
  *   cfg.fsm 作为模板，通道可用自己的 fsm 字段覆盖个别项
+ *
+ * @param {object} cfg
+ * @param {{loose?:boolean}} [opts] loose=true 时用 cfg.fsm.loose 的相位阈值
+ *   （「动作发生了就算一次」，幅度另算合格率）。见 tpc-fsm.js 的 meetsQualify。
  */
-export function channelsOf(cfg) {
+export function channelsOf(cfg, opts = {}) {
   const tpl = (cfg && cfg.fsm) || {};
+  const loose = tpl.loose && tpl.loose.phases;
+  const phases = opts.loose && loose ? mergePhases(tpl.phases, loose) : tpl.phases;
+  const base = { ...tpl, phases };
+
   if (Array.isArray(cfg && cfg.channels) && cfg.channels.length) {
     return cfg.channels.map((c, i) => {
-      const sig = c.signal || tpl.signal;
+      const sig = c.signal || base.signal;
       return {
         id: c.id || 'ch' + i,
         label: c.label || c.id || '通道 ' + (i + 1),
         signal: sig,
-        fsm: { ...tpl, ...(c.fsm || {}), signal: sig },
+        fsm: { ...base, ...(c.fsm || {}), signal: sig, phases },
       };
     });
   }
-  return [{ id: 'main', label: '', signal: tpl.signal, fsm: tpl }];
+  return [{ id: 'main', label: '', signal: base.signal, fsm: base }];
+}
+
+/**
+ * 按相位浅合并 —— 宽松配置通常只写「一个相位的 enter」，
+ * 直接整体替换会把另一个相位连同 label 一起丢掉，于是状态机建不出来。
+ */
+function mergePhases(strict, loose) {
+  const out = { ...(strict || {}) };
+  for (const k of Object.keys(loose || {})) {
+    const a = (strict && strict[k]) || {};
+    const b = loose[k] || {};
+    out[k] = { ...a, ...b, enter: { ...(a.enter || {}), ...(b.enter || {}) } };
+  }
+  return out;
+}
+
+/** 这个动作支持不支持宽松计数（配了 fsm.loose 才算支持） */
+export function supportsLoose(cfg) {
+  return !!(cfg && cfg.fsm && cfg.fsm.loose && cfg.fsm.loose.phases);
 }
 
 /* ============================ 计数（reps） ============================ */
 
 export class RepsTracker {
-  constructor(cfg = {}) {
+  constructor(cfg = {}, opts = {}) {
     this.cfg = cfg;
-    const chs = channelsOf(cfg);
+    this.loose = !!(opts.loose && supportsLoose(cfg));
+    /** 配了合格标准才谈合格率；没配就是 null，而不是假装 100% */
+    this.hasQualify = !!(cfg && cfg.fsm && cfg.fsm.qualify);
+    const chs = channelsOf(cfg, { loose: this.loose });
     for (const c of chs) {
       if (!c.signal) throw new Error('RepsTracker: 通道 ' + c.id + ' 没有 signal');
     }
@@ -73,6 +103,13 @@ export class RepsTracker {
   get count() {
     let n = 0;
     for (const c of this.channels) n += c.fsm.count;
+    return n;
+  }
+
+  /** 其中"做到位"的次数（宽松模式下才有意义；严格模式下与 count 相等） */
+  get qualifiedCount() {
+    let n = 0;
+    for (const c of this.channels) n += c.fsm.qualifiedCount || 0;
     return n;
   }
 
@@ -128,6 +165,7 @@ export class RepsTracker {
     });
 
     const count = chs.reduce((a, c) => a + c.count, 0);
+    const qualifiedCount = chs.reduce((a, c) => a + (c.qualifiedCount || 0), 0);
     const rejections = { too_fast: 0, too_slow: 0, partial: 0, low_conf: 0 };
     for (const c of chs) {
       for (const k of Object.keys(rejections)) rejections[k] += c.rejections[k] || 0;
@@ -138,6 +176,15 @@ export class RepsTracker {
     return {
       mode: 'reps',
       count,
+      /**
+       * 合格率只统计**已计入**的那几次。
+       * 分母用 count（不是 count + 被拒），因为被拒的动作连"发生"都没成立，
+       * 把它们算进来会把合格率压低，而学生其实只是做快了/做停了。
+       */
+      qualifiedCount,
+      qualifyRate: count > 0 && this.hasQualify ? qualifiedCount / count : null,
+      hasQualify: this.hasQualify,
+      loose: this.loose,
       channels: chs,
       multiChannel: chs.length > 1,
       phase: primary.phase,
@@ -158,12 +205,16 @@ export class RepsTracker {
 /**
  * 按配置建追踪器。返回对象都满足 update/snapshot/reset。
  * 计时动作的读数在 snapshot 里是 {state, holding, currentMs, totalMs, bestMs, checks}；
- * 计数动作是 {count, phase, rejections, lastRep, channels}。
+ * 计数动作是 {count, qualifiedCount, phase, rejections, lastRep, channels}。
+ *
+ * @param {object} cfg
+ * @param {{loose?:boolean}} [opts] loose=true → 用 fsm.loose 的宽松相位阈值计数，
+ *   幅度用 fsm.qualify 另算合格率。计时动作没有这个概念，opts 会被忽略。
  */
-export function createTracker(cfg) {
+export function createTracker(cfg, opts) {
   if (!cfg) throw new Error('createTracker: 缺少动作配置');
   if (modeOf(cfg) === 'hold') return new HoldTracker(cfg.hold || {});
-  return new RepsTracker(cfg);
+  return new RepsTracker(cfg, opts || {});
 }
 
 /**

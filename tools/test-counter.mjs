@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createTracker, modeOf } from '../shared/tpc-counter.js';
+import { createTracker, modeOf, channelsOf, supportsLoose } from '../shared/tpc-counter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -159,8 +159,8 @@ function pack2(sA, sB, nameA, nameB, extra) {
 
 /* ============================== 运行与断言 ============================== */
 
-function run(cfg, frames) {
-  const tr = createTracker(cfg);
+function run(cfg, frames, opts) {
+  const tr = createTracker(cfg, opts);
   const counts = [];
   const hold = [];
   let lastT = 0;
@@ -579,8 +579,87 @@ console.log('   配置 ' + ALL.version + '，动作 ' + Object.keys(EX).length +
     detail.length ? detail.join(' | ') : Object.keys(EX).length + ' 个动作全部通过对象名：' + Object.keys(EX).join('、'));
 }
 
-/* ============================== 汇总 ============================== */
+console.log('\n[9] 宽松计数 + 合格率：「算一次」与「做到位」是两件事');
+{
+  const SQ = EX.squat;
 
+  // ---- 配置合并：只放宽末相，其余一个字不能动 ----
+  const strictCh = channelsOf(SQ, { loose: false })[0].fsm;
+  const looseCh = channelsOf(SQ, { loose: true })[0].fsm;
+  check('默认仍是严格阈值（原有行为不变）',
+    strictCh.phases.stand.enter.gte === 158 && strictCh.phases.bottom.enter.lte === 100,
+    '站直 158 / 蹲底 100');
+  check('宽松只放宽末相，起始相阈值没动',
+    looseCh.phases.bottom.enter.lte === 136 && looseCh.phases.stand.enter.gte === 158,
+    '站直仍是 158 / 蹲底放到 136');
+  check('★ 浅合并没把相位 label 弄丢（丢了 PhaseFsm 直接建不出来）',
+    looseCh.phases.stand.label === '站立' && looseCh.phases.bottom.label === '蹲到底',
+    JSON.stringify([looseCh.phases.stand.label, looseCh.phases.bottom.label]));
+  check('合并没弄坏 cycle 与 signal 引用',
+    looseCh.cycle.length === 2 && looseCh.cycle[0] === 'stand' && looseCh.signal === 'kneeAngle',
+    JSON.stringify(looseCh.cycle) + ' @ ' + looseCh.signal);
+
+  // ---- 多通道：每个通道各自拿到宽松阈值，且仍用自己那条信号 ----
+  const hkChs = channelsOf(EX.high_knee, { loose: true });
+  check('多通道动作的每个通道都拿到宽松阈值，且各用各的信号',
+    hkChs.length === 2 &&
+    hkChs.every((c) => c.fsm.phases.up.enter.lte === 0.06) &&
+    hkChs[0].signal === 'kneeHeightL' && hkChs[1].signal === 'kneeHeightR',
+    hkChs.map((c) => c.signal + '→' + c.fsm.phases.up.enter.lte).join(' | '));
+
+  check('supportsLoose 只对配了 loose 的计数动作成立',
+    supportsLoose(SQ) === true && supportsLoose(EX.horse_stance) === false,
+    '深蹲 true / 马步 false');
+  check('计时动作请求宽松不报错（这个开关对它本来就没意义）',
+    (() => { try { createTracker(EX.horse_stance, { loose: true }); return true; } catch (e) { return false; } })(),
+    '');
+
+  // ---- 端到端：同一条半蹲曲线，严格 0 次 / 宽松 10 次但合格 0 ----
+  const halfFrames = pack(osc({ cycles: 10, periodMs: 2000, hi: 172, lo: 132, startAt: 'hi' }),
+    'kneeAngle', { torsoLean: 20 });
+
+  const strictHalf = run(SQ, halfFrames);
+  check('对照：半蹲 10 次在严格模式下 → 0 次（默认行为没被改）',
+    strictHalf.snap.count === 0, 'count=' + strictHalf.snap.count);
+
+  const looseHalf = run(SQ, halfFrames, { loose: true });
+  check('★ 宽松模式：半蹲 10 次 → 计入 10、合格 0、合格率 0',
+    looseHalf.snap.count === 10 && looseHalf.snap.qualifiedCount === 0 &&
+    looseHalf.snap.qualifyRate === 0,
+    'count=' + looseHalf.snap.count + '，qualified=' + looseHalf.snap.qualifiedCount +
+    '，rate=' + looseHalf.snap.qualifyRate);
+
+  const fullFrames = pack(osc({ cycles: 10, periodMs: 2000, hi: 172, lo: 85, startAt: 'hi' }),
+    'kneeAngle', { torsoLean: 20 });
+  const looseFull = run(SQ, fullFrames, { loose: true });
+  check('宽松模式：标准 10 次 → 10 / 10，合格率 100%',
+    looseFull.snap.count === 10 && looseFull.snap.qualifiedCount === 10 &&
+    looseFull.snap.qualifyRate === 1,
+    looseFull.snap.qualifiedCount + '/' + looseFull.snap.count + '，rate=' + looseFull.snap.qualifyRate);
+  check('严格模式下只要计入就必然合格（说明 qualify 与严格阈值同源，不是另写一套）',
+    looseFull.snap.count === looseFull.snap.qualifiedCount,
+    looseFull.snap.qualifiedCount + '/' + looseFull.snap.count);
+
+  // ---- 方向为「越大越好」的动作（开合跳用 signalMax）----
+  const jjHalf = run(EX.jumping_jack,
+    pack(osc({ cycles: 10, periodMs: 700, hi: 1.15, lo: 0.35 }), 'ankleSpread',
+      { wristHeight: -0.4, kneeAngle: 170 }), { loose: true });
+  check('开合跳：只开到 1.15× → 计入 10、合格 0（signalMax 方向的条件也生效）',
+    jjHalf.snap.count === 10 && jjHalf.snap.qualifiedCount === 0,
+    'count=' + jjHalf.snap.count + '，qualified=' + jjHalf.snap.qualifiedCount);
+
+  // ---- 快照形状 ----
+  check('快照标明 loose / hasQualify，界面据此决定显示什么',
+    looseFull.snap.loose === true && looseFull.snap.hasQualify === true &&
+    strictHalf.snap.loose === false && strictHalf.snap.hasQualify === true,
+    '宽松 ' + looseFull.snap.loose + ' / 严格 ' + strictHalf.snap.loose);
+
+  const idle = run(SQ, pack(flat(172, { durationMs: 3000 }), 'kneeAngle', { torsoLean: 3 }), { loose: true });
+  check('一次都没做时合格率是 null 而不是 0（「还没做」不等于「全不合格」）',
+    idle.snap.qualifyRate === null, 'rate=' + idle.snap.qualifyRate);
+}
+
+/* ============================== 汇总 ============================== */
 const failed = results.filter((r) => !r.ok);
 console.log('\n' + '='.repeat(64));
 console.log('结果：' + (results.length - failed.length) + '/' + results.length + ' 通过');

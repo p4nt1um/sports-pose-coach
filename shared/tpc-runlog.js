@@ -173,6 +173,9 @@ export function closeRun(run, close = {}) {
     result: {
       mode: snapshot.mode || null,
       count: num(snapshot.count),
+      /** 宽松计数才有的"做到位"次数；严格模式与 count 相等 */
+      qualifiedCount: snapshot.qualifiedCount == null ? null : num(snapshot.qualifiedCount),
+      loose: snapshot.loose == null ? null : !!snapshot.loose,
       totalMs: num(snapshot.totalMs),
       sessions: sessions.length,
       validSessions: sessions.filter((s) => s && s.valid).length,

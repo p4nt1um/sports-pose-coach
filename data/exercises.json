@@ -104,11 +104,13 @@
       "fsm": {
         "signal": "kneeAngle",
         "cycle": ["stand", "bottom"],
-      "verb": ["下放", "起身"],
+        "verb": ["下放", "起身"],
         "phases": {
           "stand": { "enter": { "gte": 158 }, "label": "站立" },
           "bottom": { "enter": { "lte": 100 }, "label": "蹲到底" }
         },
+        "loose": { "phases": { "bottom": { "enter": { "lte": 136 } } } },
+        "qualify": { "signalMin": { "lte": 100 } },
         "minRepMs": 400,
         "maxRepMs": 8000,
         "minHoldFrames": 2,
@@ -184,11 +186,13 @@
       "fsm": {
         "signal": "ankleSpread",
         "cycle": ["close", "open"],
-      "verb": ["打开", "收回"],
+        "verb": ["打开", "收回"],
         "phases": {
           "close": { "enter": { "lte": 0.8 }, "label": "并腿" },
           "open": { "enter": { "gte": 1.25 }, "label": "开腿" }
         },
+        "loose": { "phases": { "open": { "enter": { "gte": 1.1 } } } },
+        "qualify": { "signalMax": { "gte": 1.25 } },
         "minRepMs": 120,
         "maxRepMs": 4000,
         "minHoldFrames": 2,
@@ -252,11 +256,13 @@
       "fsm": {
         "signal": "elbowAngle",
         "cycle": ["up", "down"],
-      "verb": ["下放", "撑起"],
+        "verb": ["下放", "撑起"],
         "phases": {
           "up": { "enter": { "gte": 132 }, "label": "撑起" },
           "down": { "enter": { "lte": 116 }, "label": "下降到最低点" }
         },
+        "loose": { "phases": { "down": { "enter": { "lte": 130 } } } },
+        "qualify": { "signalMin": { "lte": 116 } },
         "minRepMs": 200,
         "maxRepMs": 6000,
         "minHoldFrames": 2,
@@ -341,11 +347,13 @@
       "fsm": {
         "signal": "torsoTilt",
         "cycle": ["lying", "up"],
-      "verb": ["坐起", "躺下"],
+        "verb": ["坐起", "躺下"],
         "phases": {
           "lying": { "enter": { "gte": 68 }, "label": "躺平" },
           "up": { "enter": { "lte": 45 }, "label": "坐起" }
         },
+        "loose": { "phases": { "up": { "enter": { "lte": 56 } } } },
+        "qualify": { "signalMin": { "lte": 45 } },
         "minRepMs": 250,
         "maxRepMs": 8000,
         "minHoldFrames": 2,
@@ -420,11 +428,13 @@
       "fsm": {
         "signal": "kneeHeightL",
         "cycle": ["down", "up"],
-      "verb": ["抬腿", "落腿"],
+        "verb": ["抬腿", "落腿"],
         "phases": {
           "down": { "enter": { "gte": 0.32 }, "label": "落地" },
           "up": { "enter": { "lte": -0.04 }, "label": "抬起（膝高于髋）" }
         },
+        "loose": { "phases": { "up": { "enter": { "lte": 0.06 } } } },
+        "qualify": { "signalMin": { "lte": -0.04 } },
         "minRepMs": 100,
         "maxRepMs": 2500,
         "minHoldFrames": 1,

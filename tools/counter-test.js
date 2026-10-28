@@ -341,6 +341,81 @@ async function stepwise(page, frames) {
   const zeroNum = await page.evaluate(() => window.__counter.bigNumText());
   check('清零后大号读数回到 0', zeroNum.indexOf('0') === 0, '"' + zeroNum + '"');
 
+  /* ---------------- B1c. 宽松计数 + 合格率 ---------------- */
+  console.log('\n[B1c] 宽松计数：动作发生就算一次，做到没有另算');
+
+  const looseInit = await page.evaluate(() => ({
+    loose: window.__counter.loose,
+    supported: window.__counter.looseSupported,
+    qualify: window.__counter.qualifyText.trim(),
+  }));
+  check('默认是严格口径（与之前行为一致）',
+    looseInit.loose === false && looseInit.supported === true && looseInit.qualify === '',
+    'loose=' + looseInit.loose + '，合格率行="' + looseInit.qualify + '"');
+
+  const looseNote = await page.evaluate(() => {
+    window.__counter.setLoose(true);
+    return { loose: window.__counter.loose, note: window.__counter.looseNoteText };
+  });
+  check('打开后切到宽松口径', looseNote.loose === true, 'loose=' + looseNote.loose);
+  check('界面写明了「放宽的是哪一个阈值」（不是只给一个开关）',
+    /100/.test(looseNote.note) && /136/.test(looseNote.note),
+    '"' + looseNote.note.replace(/\s+/g, ' ').slice(0, 90) + '"');
+
+  const looseHalf = await runFrames(page, repsFrames({
+    signalNames: sqSig, driver: [{ signal: 'kneeAngle' }],
+    start: 172, extreme: 132, reps: 10, periodMs: 2000,
+  }));
+  check('★ 半蹲 10 次 → 计入 10 次（严格口径下是 0 次）',
+    looseHalf.count === 10, 'count=' + looseHalf.count);
+  check('★ 但合格 0 次、合格率 0%（做到了没有是另一回事）',
+    looseHalf.qualifiedCount === 0 && looseHalf.qualifyRate === 0,
+    'qualified=' + looseHalf.qualifiedCount + '，rate=' + looseHalf.qualifyRate);
+
+  const qualDom = (await page.evaluate(() => window.__counter.qualifyText)).replace(/\s+/g, ' ').trim();
+  check('界面把「做到位几次」显示出来（不是只把数据存起来）',
+    /做到位/.test(qualDom) && /0/.test(qualDom) && /10/.test(qualDom) && /0%/.test(qualDom),
+    '"' + qualDom + '"');
+
+  const looseFull = await runFrames(page, repsFrames({
+    signalNames: sqSig, driver: [{ signal: 'kneeAngle' }],
+    start: 172, extreme: 85, reps: 10, periodMs: 2000,
+  }));
+  check('标准幅度 10 次 → 10 / 10，合格率 100%',
+    looseFull.count === 10 && looseFull.qualifiedCount === 10 && looseFull.qualifyRate === 1,
+    looseFull.qualifiedCount + '/' + looseFull.count + '，rate=' + looseFull.qualifyRate);
+
+  await page.evaluate(() => window.__counter.setExercise('horse_stance'));
+  const holdLoose = await page.evaluate(() => ({
+    loose: window.__counter.loose,
+    supported: window.__counter.looseSupported,
+    note: window.__counter.looseNoteText,
+    disabled: document.getElementById('chkLoose').disabled,
+    qualText: window.__counter.qualifyText,
+  }));
+  check('切到计时动作 → 自动退回严格，开关禁用并说明原因',
+    holdLoose.loose === false && holdLoose.supported === false &&
+    holdLoose.disabled === true && /计时/.test(holdLoose.note),
+    '"' + holdLoose.note.replace(/\s+/g, ' ').slice(0, 50) + '"');
+  // 这一条是结构调整时差点漏掉的：合格率行原本写在「计数动作」分支里，
+  // 于是从宽松深蹲切到计时动作时，屏幕上会留着上一动作的「做到位 0 / 10」。
+  check('★ 切到计时动作后合格率行被清掉（不留上一动作的残影）',
+    holdLoose.qualText === '', '"' + holdLoose.qualText + '"');
+
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+  const backLoose = await page.evaluate(() => ({
+    loose: window.__counter.loose,
+    checked: document.getElementById('chkLoose').checked,
+  }));
+  check('切回计数动作 → 宽松口径自动恢复（偏好没被弄丢）',
+    backLoose.loose === true && backLoose.checked === true, JSON.stringify(backLoose));
+
+  const prefStored = await page.evaluate(() => localStorage.getItem('spc.loose.v1'));
+  check('口径偏好写进本地存档（下次打开沿用）', prefStored === '1', '"' + prefStored + '"');
+
+  // 后面的用例要跑在严格口径上
+  await page.evaluate(() => window.__counter.setLoose(false));
+
   // ---- 多通道：原地高抬腿 ----
   console.log('\n[B2] 多通道：原地高抬腿（左右腿各跑一个状态机）');
   await page.evaluate(() => window.__counter.setExercise('high_knee'));
@@ -680,6 +755,9 @@ async function stepwise(page, frames) {
   check('★ 合成画面里没人 → 记录里也是 0 次（快照不虚报成绩）',
     !!(rl.result && rl.result.count === 0 && rl.result.mode === 'reps'),
     'count=' + (rl.result || {}).count);
+  check('运行记录里也标了计数口径（宽松/严格），事后能分清这次是怎么算的',
+    !!(rl.result && rl.result.loose === false && rl.result.qualifiedCount === 0),
+    'loose=' + (rl.result || {}).loose + '，qualified=' + (rl.result || {}).qualifiedCount);
 
   const runNoteText = (await page.textContent('#runNote')).replace(/\s+/g, ' ').trim();
   check('界面给出「最近一次」摘要（不打开 JSON 也知道导出了什么）',

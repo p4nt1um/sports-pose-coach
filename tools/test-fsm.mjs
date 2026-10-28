@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PhaseFsm, REJECT, activeWindowMs } from '../shared/tpc-fsm.js';
+import { PhaseFsm, REJECT, activeWindowMs, meetsQualify } from '../shared/tpc-fsm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -393,6 +393,93 @@ console.log('\n[9] 节奏拆解端到端：底部停顿不属于任何一半');
     !!tooSlow && tooSlow.reject === REJECT.TOO_SLOW && Array.isArray(tooSlow.transitions) &&
     tooSlow.transitions.length === 2,
     'reject=' + (tooSlow && tooSlow.reject));
+}
+
+console.log('\n[10] 宽松计数 + 合格率：把「算不算一次」与「做到没有」拆开');
+{
+  // 合格判定的纯函数：三种"不知道"必须给 null，不能给 false
+  check('有标准 + 数据 → 按标准判',
+    meetsQualify(95, 172, { signalMin: { lte: 100 } }) === true &&
+    meetsQualify(108, 172, { signalMin: { lte: 100 } }) === false,
+    '95°→合格，108°→不合格');
+  check('★ 数据缺失返回 null（「没量到」不等于「没做到」）',
+    meetsQualify(null, 172, { signalMin: { lte: 100 } }) === null,
+    'signalMin=null');
+  check('没配标准返回 null（不假装合格，也不假装不合格）',
+    meetsQualify(95, 172, null) === null && meetsQualify(95, 172, {}) === null,
+    'qualify=null / {}');
+  check('signalMax 方向的条件也能判（开合跳用这个）',
+    meetsQualify(null, 1.4, { signalMax: { gte: 1.25 } }) === true &&
+    meetsQualify(null, 1.15, { signalMax: { gte: 1.25 } }) === false,
+    '1.4→合格，1.15→不合格');
+  check('两个条件都要成立（且任一缺数据就整体 null）',
+    meetsQualify(95, 1.4, { signalMin: { lte: 100 }, signalMax: { gte: 1.25 } }) === true &&
+    meetsQualify(95, null, { signalMin: { lte: 100 }, signalMax: { gte: 1.25 } }) === null,
+    '缺一半时不给结论');
+
+  // 宽松配置 = 只把末相阈值从 100 放到 136，起始相 158 一个字没动
+  const LOOSE = {
+    ...CFG,
+    phases: { ...CFG.phases, bottom: { ...CFG.phases.bottom, enter: { lte: 136 } } },
+  };
+  const q = (frames, cfg) => {
+    const { fsm } = run(frames, cfg);
+    return { count: fsm.count, qualified: fsm.qualifiedCount };
+  };
+
+  const strictHalf = q(squatSignal({ reps: 30, periodMs: 2000, bottom: 132 }), CFG);
+  check('严格模式：只蹲到 132° → 一次都不算（原有口径不变）',
+    strictHalf.count === 0, 'count=' + strictHalf.count);
+
+  const looseHalf = q(squatSignal({ reps: 30, periodMs: 2000, bottom: 132 }), LOOSE);
+  check('★ 宽松模式：同样的半蹲 → 30 次（动作发生了就计）',
+    looseHalf.count === 30, 'count=' + looseHalf.count);
+  check('★ 但合格 0 次（做到了没有是另一回事）',
+    looseHalf.qualified === 0, 'qualified=' + looseHalf.qualified);
+
+  const looseFull = q(squatSignal({ reps: 30, periodMs: 2000, bottom: 85 }), LOOSE);
+  check('宽松模式：标准幅度 → 30 次且全部合格',
+    looseFull.count === 30 && looseFull.qualified === 30,
+    'count=' + looseFull.count + '，qualified=' + looseFull.qualified);
+
+  const mixed = q([].concat(
+    squatSignal({ reps: 10, periodMs: 2000, bottom: 85 }),
+    squatSignal({ reps: 10, periodMs: 2000, bottom: 132 })
+  ), LOOSE);
+  check('宽松模式：10 次到位 + 10 次半程 → 20 次，合格 10（合格率 50%）',
+    mixed.count === 20 && mixed.qualified === 10,
+    'count=' + mixed.count + '，qualified=' + mixed.qualified +
+    '，合格率 ' + (mixed.qualified / mixed.count * 100) + '%');
+
+  // 放宽末相的安全边界：这两条是"只看宽松模式会误计"的证伪实验
+  const walk = q(signal((t) => 162.5 + 12.5 * Math.sin((2 * Math.PI * t) / 1100), { durationMs: 30000 }), LOOSE);
+  check('★ 宽松模式下走动仍然一次都不算（起始相阈值没放宽）',
+    walk.count === 0, 'count=' + walk.count);
+
+  const jitter = q(signal((t) => 130 + 20 * Math.sin((2 * Math.PI * t) / 1600), { durationMs: 20000 }), LOOSE);
+  check('★ 宽松模式下 110°~150° 来回波动仍然不算（能进蹲相、但回不到站立相）',
+    jitter.count === 0, 'count=' + jitter.count);
+
+  const fast = q(squatSignal({ reps: 40, periodMs: 250 }), LOOSE);
+  // 这不是"期望它漏"，而是**把代价量化并锁住**：
+  // 4 次/秒的全幅度深蹲物理上不可能（真人最快约 1.5 次/秒），但它是最狠的抖动输入。
+  // 放宽末相阈值后相位更容易凑成完整穿越，于是有这么几次刚好越过 minRepMs=400。
+  // 严格模式下这里是 0。要消掉它只能同时收紧 minRepMs，而那会误杀体能差的学生。
+  check('宽松模式对 4Hz 全幅度极限抖动会漏进少量（已知代价，上限锁在 12/40）',
+    fast.count <= 12,
+    'count=' + fast.count + '/40（严格模式 0）+ qualified=' + fast.qualified);
+
+  const noQ = q(squatSignal({ reps: 10, periodMs: 2000 }), { ...CFG, qualify: undefined });
+  check('没配合格标准时 qualifiedCount 保持 0（不假装 100%）',
+    noQ.count === 10 && noQ.qualified === 0,
+    'count=' + noQ.count + '，qualified=' + noQ.qualified);
+
+  // 被拒动作（真实场景里真会发生的那一类：半程就起身太快）
+  const partialReps = q(squatSignal({ reps: 1, periodMs: 2000, preMs: 0, postMs: 500 })
+    .map((f, i) => (i < 8 ? { ...f, value: 88 } : f)), LOOSE);
+  check('只观测到半个动作时既不计数也不进合格统计',
+    partialReps.count === 0 && partialReps.qualified === 0,
+    'count=' + partialReps.count + '，qualified=' + partialReps.qualified);
 }
 
 /* ------------------------------ 汇总 ------------------------------ */

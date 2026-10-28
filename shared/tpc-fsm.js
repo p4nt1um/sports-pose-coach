@@ -95,6 +95,43 @@ export const REJECT = {
   LOW_CONFIDENCE: 'low_conf',   // 关键点不可信，本帧不推进
 };
 
+/** 单个条件的判定。缺值（null）返回 null —— 「不知道」不能当成「不满足」 */
+function cmp(v, cond) {
+  if (v === null || v === undefined || !isFinite(v)) return null;
+  if (!cond) return true;
+  if (cond.gte !== undefined && !(v >= cond.gte)) return false;
+  if (cond.lte !== undefined && !(v <= cond.lte)) return false;
+  if (cond.gt !== undefined && !(v > cond.gt)) return false;
+  if (cond.lt !== undefined && !(v < cond.lt)) return false;
+  return true;
+}
+
+/**
+ * 「这一次算不算做到位」—— 与「算不算一次」是两件事。
+ *
+ * 这是儿童体感线的关键拆分：**计数回答"发生了没有"，合格回答"做到什么程度"**。
+ * 若把两者绑在同一个阈值上，结果就是学生一累整节课 0 次，直接放弃。
+ *
+ * 所以宽松模式（fsm.loose）只放宽**末相**阈值（幅度不足也算一次），
+ * 起始相阈值保持严格（防止晃动/走动凑数）；合格标准 `fsm.qualify`
+ * 仍然取动作本身的原始要求。
+ *
+ * @param {number|null} signalMin 本次动作主信号的最小值
+ * @param {number|null} signalMax 本次动作主信号的最大值
+ * @param {object|null} qualify   { signalMin?: {lte/gte/gte...}, signalMax?: {...} }
+ * @returns {boolean|null} null = 没配标准 / 数据缺失，**不假装合格也不假装不合格**
+ */
+export function meetsQualify(signalMin, signalMax, qualify) {
+  if (!qualify || typeof qualify !== 'object') return null;
+  const parts = [];
+  if (qualify.signalMin) parts.push(cmp(signalMin, qualify.signalMin));
+  if (qualify.signalMax) parts.push(cmp(signalMax, qualify.signalMax));
+  if (!parts.length) return null;
+  // 任一项缺数据 → 整条给 null。半个证据不足以判定"做到位了"
+  if (parts.some((p) => p === null)) return null;
+  return parts.every(Boolean);
+}
+
 export class PhaseFsm {
   /**
    * @param {object} cfg 来自 data/exercises.json 的 fsm 段
@@ -141,6 +178,8 @@ export class PhaseFsm {
     this.phase = PHASE_UNKNOWN;
     this.stageIndex = -1;          // -1 表示 unknown
     this.count = 0;
+    /** 其中"做到位"的次数。只在配了 cfg.qualify 时才有意义 */
+    this.qualifiedCount = 0;
     this.rejections = { too_fast: 0, too_slow: 0, partial: 0, low_conf: 0 };
     this.phaseEnteredAt = 0;
     this.phaseFrames = 0;
@@ -409,6 +448,8 @@ export class PhaseFsm {
         flags: Array.from(this._repGuardMap.values()),
         accepted: false,
         reject: null,
+        /** 做到位了吗？null = 没配合格标准 / 没数据（被拒的那次也保持 null） */
+        qualified: null,
       };
 
       /**
@@ -459,11 +500,16 @@ export class PhaseFsm {
       } else {
         rep.accepted = true;
         rep.index = ++this.count;
+        // 合格判定只对"已计入"的那一次做 —— 被拒的动作没有资格谈合格率，
+        // 混进来会把分母撑大、合格率反常变低
+        rep.qualified = meetsQualify(rep.signalMin, rep.signalMax, this.cfg.qualify);
+        if (rep.qualified) this.qualifiedCount++;
         this._emit('count', tMs, {
           count: this.count,
           durationMs,
           signalMin: this._repMin,
           signalMax: this._repMax,
+          qualified: rep.qualified,
         });
       }
 
@@ -488,6 +534,7 @@ export class PhaseFsm {
       phase: this.phase,
       stageIndex: this.stageIndex,
       count: this.count,
+      qualifiedCount: this.qualifiedCount,
       armed: this.armed,
       frozen: this.frozen,
       lost: this.lost,
@@ -505,6 +552,7 @@ export class PhaseFsm {
       phase: this.phase,
       stageIndex: this.stageIndex,
       count: this.count,
+      qualifiedCount: this.qualifiedCount,
       armed: this.armed,
       frozen: this.frozen,
       lost: this.lost,

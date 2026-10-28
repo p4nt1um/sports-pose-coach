@@ -158,6 +158,7 @@
         <span class="k" id="subLabel">计数</span>
         <span class="v" id="subValue">—</span>
         <div class="chanrow" id="chanRow"></div>
+        <div class="chanrow" id="qualRow"></div>
       </div>
     </div>
   </section>
@@ -222,6 +223,14 @@
     </div>
 
     <div class="card">
+      <h3>计数口径<span class="tag">给体能弱的学生</span></h3>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="chkLoose"> 宽松计数<span class="mini">动作发生了就算一次，做到没有另算</span></label>
+      </div>
+      <div class="muted" id="looseNote" style="font-size:12px;line-height:1.55"></div>
+    </div>
+
+    <div class="card">
       <h3>运行记录<span class="tag">排查用</span></h3>
       <div class="muted" style="font-size:12px;line-height:1.55;margin-bottom:8px">
         每次「打开摄像头 → 停止」自动留一份：当时的<b>生效参数</b>、画面分辨率、推理耗时、成绩与节奏。
@@ -239,7 +248,7 @@
 // 本页在项目根目录，共享模块在 ./shared/（tools/ 下那一页才用 ../shared/）
 import { PoseEngine, CameraSource } from './shared/tpc-core.js';
 import { SignalSet } from './shared/tpc-signals.js';
-import { createTracker, modeOf } from './shared/tpc-counter.js';
+import { createTracker, modeOf, supportsLoose } from './shared/tpc-counter.js';
 import { computeLayout, resizeCanvas, drawPoses } from './shared/tpc-draw.js';
 // 与调试台共用同一份存档：老师在那页调好的阈值，这页直接生效
 import { TunedStore } from './shared/tpc-store.js';
@@ -250,6 +259,7 @@ import { createRun, closeRun, runFile, describeRun } from './shared/tpc-runlog.j
 const VENDOR = '/vendor/';
 const REC_KEY = 'spc.records.v1';
 const VOICE_KEY = 'spc.voice.v1';
+const LOOSE_KEY = 'spc.loose.v1';
 
 const el = (id) => document.getElementById(id);
 const video = el('video');
@@ -526,6 +536,93 @@ function saveVoicePrefs() {
   } catch (e) { /* 隐私模式：本次会话内仍然生效，只是刷新后丢 */ }
 }
 
+/* ==================== 计数口径：宽松计数 + 合格率 ==================== */
+/*
+ * 为什么需要两个数：一个学生每次都只蹲到一半，用严格口径是「0 次」，
+ * 老师看到的是"这孩子什么都没做"。事实上他做了 20 次，只是没做到位。
+ *
+ * 所以口径拆成两层：
+ *   宽松模式 → count 用 fsm.loose 的阈值（动作发生就算一次）
+ *            → 另算 qualifiedCount（达到 fsm.qualify 的次数）
+ *   严格模式 → 两者相等，界面不必显示合格率（显示了也是废话 100%）
+ *
+ * 关键：**宽松只放宽末相**（动作幅度那一端），起始相阈值不动。
+ * 放宽起点会让走动、身体晃动都更容易凑成一次 —— 那是误计，不是宽容。
+ * 这条规则写在 docs/参数依据.md 的 fsm.loose 行里，改配置前先读它。
+ */
+
+function loadLoosePref() {
+  try { return localStorage.getItem(LOOSE_KEY) === '1'; }
+  catch (e) { return false; }   // 隐私模式：默认严格，行为可预期
+}
+
+function saveLoosePref(on) {
+  try { localStorage.setItem(LOOSE_KEY, on ? '1' : '0'); }
+  catch (e) { /* 忽略 */ }
+}
+
+/** 现在的口径：勾了 + 这个动作支持宽松，两个条件都成立才算 */
+function looseOn() {
+  return el('chkLoose').checked && !!EX && supportsLoose(EX);
+}
+
+/**
+ * 建追踪器的**唯一入口**。
+ *
+ * 为什么必须收成一个函数：口径（loose）散在三处以上（加载动作 / 清零 / 切换开关），
+ * 任何一处漏传 opts，症状是「勾着宽松，但计数悄悄按严格算」—— 不报错、界面也看不出来。
+ * 这个坑真踩到了：点「清零」后宽松模式失效，界面还打着勾。
+ */
+function newTracker() {
+  return createTracker(EX, { loose: looseOn() });
+}
+
+/**
+ * 换口径必须重建追踪器 —— 阈值不同，旧的累计值没有可比性。
+ * 所以这里会清零计数并明确告诉老师（静默清零是最招人恨的交互）。
+ */
+function applyLooseMode(announce) {
+  if (!EX) return;
+  const want = el('chkLoose').checked;
+  const supported = supportsLoose(EX);
+  el('chkLoose').disabled = !supported;
+
+  tracker = newTracker();
+  lastSpokenAt = 0;
+  speaker.reset();
+  renderLooseNote();
+  renderAll();
+
+  if (announce) {
+    flash(want && supported
+      ? '已切到宽松计数：动作发生就算一次，做到没有另算合格率'
+      : '已切回严格计数：幅度不够不算一次');
+  }
+}
+
+function renderLooseNote() {
+  const host = el('looseNote');
+  if (!host) return;
+  if (!EX) { host.innerHTML = ''; return; }
+  if (!supportsLoose(EX)) {
+    // 只禁用、不清勾选：清掉就把老师的偏好弄丢了，切回计数动作时又得重勾一次
+    el('chkLoose').disabled = true;
+    host.innerHTML = '这个动作是计时类，没有「幅度不够」的问题，所以宽松计数对它不适用。' +
+      (el('chkLoose').checked ? '<br>切回计数动作后会自动恢复宽松口径。' : '');
+    return;
+  }
+  el('chkLoose').disabled = false;
+  const f = EX.fsm;
+  const last = f.cycle[f.cycle.length - 1];
+  const strict = f.phases[last].enter;
+  const loose = (f.loose.phases[last] || {}).enter || {};
+  const fmtC = (o) => Object.entries(o).map(([k, v]) => k + ' ' + v).join(' / ');
+  host.innerHTML = '宽松只放宽「' + (f.phases[last].label || last) + '」这一端：<b>' +
+    esc(fmtC(strict)) + '</b> → <b>' + esc(fmtC(loose)) + '</b>。' +
+    '起始相阈值不动，否则走动、晃动也会被算成一次。' +
+    '<br>合格率分母只算已计入的动作，被拒（太快/停住）的不算进去。';
+}
+
 /** 真实发声。必须保证回调一定触发 —— onend 在某些浏览器上会漏，所以补一个按字数估的兜底 */
 function realSay(text, done) {
   try {
@@ -617,7 +714,8 @@ async function loadExercise(id) {
   }
 
   signalSet = new SignalSet(EX.signals);
-  tracker = createTracker(EX);
+  // 口径跟着动作走：换了不支持宽松的动作（如计时类）就自动退回严格
+  tracker = newTracker();
   poseCount = 0;
   lastSpokenAt = 0;
   // 换了动作，上一句纠正就过期了 —— 而且上个动作的原因放到新动作上会误导
@@ -632,7 +730,8 @@ async function loadExercise(id) {
   el('holdBar').style.display = hold ? '' : 'none';
   el('subLabel').textContent = hold ? '当前段 / 累计' : '完成段';
   el('chanRow').innerHTML = '';
-
+  el('qualRow').innerHTML = '';
+  renderLooseNote();
   el('paramNote').innerHTML = appliedCustom
     ? '<span class="okline">已套用 ' + appliedCustom + ' 项调试台自定义参数</span><br>' +
       '（' + esc(rec.savedAtText || '') + ' 保存）'
@@ -855,6 +954,25 @@ function phaseStyle(p) {
   return { color: PHASE_COLORS[idx % PHASE_COLORS.length], label: ph && ph.label ? ph.label : p };
 }
 
+/**
+ * 合格率那一行。
+ *
+ * 只在宽松模式下显示：严格模式里合格率恒等于 100%（阈值本身就是合格线），
+ * 显示出来是一句废话，还会让人以为系统在替自己打分。
+ *
+ * 一次都没做时不说「0%」而说「还没做」—— 0% 会被读成"全班都不合格"。
+ */
+function qualifyLine(s) {
+  if (!s || s.mode !== 'reps' || !s.hasQualify || !s.loose) return '';
+  if (!s.count) {
+    return '<span style="color:#9fb0c0">宽松计数：动作发生就算一次，做到没有另算</span>';
+  }
+  const pct = Math.round((s.qualifyRate || 0) * 100);
+  const color = pct >= 80 ? '#34d399' : (pct >= 50 ? '#fbbf24' : '#f87171');
+  return '<span>做到位 <b style="color:' + color + '">' + s.qualifiedCount + '</b> / ' + s.count +
+    '（' + pct + '%）</span>';
+}
+
 function renderAll() {
   renderReadouts();
   renderFeedback(tracker ? tracker.snapshot() : null);
@@ -905,6 +1023,10 @@ function renderReadouts() {
     }
     el('diagValue').textContent = fmt(s.value, modeOf(EX) === 'hold' ? 1 : 2);
   }
+
+  // 合格率只在「计数动作 + 宽松口径」下出现。放在 if/else 外面统一赋值：
+  // 计时动作那边也要走一遍，否则从宽松的深蹲切到靠墙静蹲会留下上一行的残影。
+  el('qualRow').innerHTML = qualifyLine(s);
 
   const ps = phaseStyle(hold ? s.state : s.phase);
   el('stateChip').innerHTML = '<span class="statechip" style="background:' + ps.color + '1f;color:' + ps.color + '">' +
@@ -1014,7 +1136,7 @@ el('btnRun').addEventListener('click', exportRuns);
 window.addEventListener('beforeunload', () => { endRun('reloaded'); });
 el('btnZero').addEventListener('click', () => {
   if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
-  tracker = createTracker(EX);
+  tracker = newTracker();     // ★ 必须走同一个入口，否则清零会把宽松口径悄悄丢掉
   lastSpokenAt = 0;
   speaker.reset();          // 上一组还没念完的话就此作废，别串到下一组
   renderAll();
@@ -1022,6 +1144,10 @@ el('btnZero').addEventListener('click', () => {
 });
 el('chkVoice').addEventListener('change', saveVoicePrefs);
 el('chkGuide').addEventListener('change', saveVoicePrefs);
+el('chkLoose').addEventListener('change', () => {
+  saveLoosePref(el('chkLoose').checked);
+  applyLooseMode(true);   // 必须出声说明：换口径会清零，静默清零最招人恨
+});
 el('selExercise').addEventListener('change', (e) => {
   loadExercise(e.target.value).catch((err) => {
     el('cameraHint').innerHTML = '<span class="err">' + esc(err.message || err) + '</span>';
@@ -1055,6 +1181,8 @@ store = new TunedStore();
   const prefs = loadVoicePrefs();
   el('chkVoice').checked = prefs.voice;
   el('chkGuide').checked = prefs.guide;
+  // 计数口径也要记住：老师带同一个班，不会每节课重勾一次
+  el('chkLoose').checked = loadLoosePref();
   buildPicker();
   renderRecords();
   renderGuideLog();
@@ -1082,6 +1210,11 @@ window.__counter = {
     return {
       mode: s.mode,
       count: s.count,
+      /** 宽松计数下「做到位」的次数；严格模式与 count 相等 */
+      qualifiedCount: s.qualifiedCount != null ? s.qualifiedCount : null,
+      qualifyRate: s.qualifyRate != null ? s.qualifyRate : null,
+      loose: s.loose != null ? s.loose : null,
+      hasQualify: s.hasQualify != null ? s.hasQualify : null,
       phase: s.phase || null,
       state: s.state || null,
       value: s.value != null ? s.value : null,
@@ -1113,6 +1246,17 @@ window.__counter = {
   /** 手动结账当前这次运行（自检用；正常路径是停止按钮/切动作/关页面） */
   endRunNow: (reason) => endRun(reason || 'stopped'),
   clearRuns: () => { runs = []; saveRuns(runs); renderRunNote(); return runs.length; },
+  /** 计数口径：宽松计数（动作发生就算一次）+ 合格率 */
+  get loose() { return !!(tracker && tracker.loose); },
+  get looseSupported() { return !!EX && supportsLoose(EX); },
+  get looseNoteText() { return (el('looseNote') || {}).textContent || ''; },
+  get qualifyText() { return (el('qualRow') || {}).textContent || ''; },
+  setLoose: (v) => {
+    el('chkLoose').checked = !!v;
+    saveLoosePref(!!v);
+    applyLooseMode(false);
+    return { loose: !!(tracker && tracker.loose), count: tracker ? tracker.count : 0 };
+  },
   /** 最近一次动作的向心/离心拆解（自检断言用；纯数据，不含括号里的教学措辞） */
   get lastTransitions() {
     if (!tracker) return null;
