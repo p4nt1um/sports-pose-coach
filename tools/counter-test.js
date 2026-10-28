@@ -416,6 +416,160 @@ async function stepwise(page, frames) {
   // 后面的用例要跑在严格口径上
   await page.evaluate(() => window.__counter.setLoose(false));
 
+  /* ================== 学生校准（按本人满程） ================== */
+  console.log('\n[B1d] 学生校准：把阈值翻译成「在本人满程上的位置」');
+
+  await page.evaluate(() => { window.__counter.clearStudents(); });
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+  const noStudent = await page.evaluate(() => ({
+    thr: window.__counter.thresholds,
+    applied: window.__counter.profileApplied.length,
+    note: window.__counter.profileNoteText,
+  }));
+  check('没选学生 → 阈值就是文件默认（站立 158 / 蹲底 100），一项没改',
+    noStudent.thr.stand.gte === 158 && noStudent.thr.bottom.lte === 100 && noStudent.applied === 0,
+    JSON.stringify(noStudent.thr));
+
+  // 这个学生只能蹲到 125° —— 够不到 100° 的线，这就是「明明做对了却不计数」
+  const kidFrames = repsFrames({
+    signalNames: sqSig, driver: [{ signal: 'kneeAngle' }],
+    start: 165, extreme: 125, reps: 3, periodMs: 2000,
+  });
+  const kidNoCal = await runFrames(page, kidFrames);
+  check('★ 校准前：同一串动作一次都不算（这正是需要校准的原因）',
+    kidNoCal.count === 0, 'count=' + kidNoCal.count);
+
+  await page.evaluate(() => window.__counter.setStudent('小明'));
+  const richNote = await page.evaluate(() => window.__counter.profileNoteText);
+  check('选了学生但还没校准 → 明确说「还没校准这个动作」',
+    /还没校准/.test(richNote), '"' + richNote.replace(/\s+/g, ' ').slice(0, 44) + '"');
+
+  await page.evaluate(() => window.__counter.calStart());
+  await page.evaluate((f) => window.__counter.feed(f), kidFrames);
+  const calN = await page.evaluate(() => ({ samples: window.__counter.calSamples, active: window.__counter.calActive }));
+  // 这一条是整项的地基：采集若走状态机，上面那串动作阈值一次没过 → 一帧都采不到
+  check('★ 采集不经过状态机（阈值一次都没过，仍然采到满程）',
+    calN.active === true && calN.samples > 100, 'samples=' + calN.samples);
+
+  const calRes = await page.evaluate(() => window.__counter.calStop());
+  const afterCal = await page.evaluate(() => ({
+    thr: window.__counter.thresholds,
+    applied: window.__counter.profileApplied,
+    note: window.__counter.profileNoteText,
+    pf: window.__counter.profileOf('squat'),
+  }));
+  check('★ 学出的满程接近学生实际幅度（165°−125° = 40°）',
+    calRes && Math.abs(calRes.range - 40) <= 3, 'range=' + (calRes && calRes.range));
+  // 注意这里**不能**断言「站立阈值绝对值变小」。它保持在与成人相同的位置比例上
+  // （约 84% 满程处），所以对一个两头都窄的学生，绝对值几乎不变 —— 真正变化的是
+  // 「蹲底」这一端：原本要 100°（他够不到），现在按他自己的满程算成 136.5°。
+  check('★ 阈值跟着换算：蹲底阈值变高（够得到了），站立阈值仍低于他自己的最高点',
+    afterCal.thr.bottom.lte > 100 && afterCal.thr.stand.gte < afterCal.pf.p98,
+    'stand=' + afterCal.thr.stand.gte + '（他的最高 ' + afterCal.pf.p98 + '），bottom=' +
+      afterCal.thr.bottom.lte);
+  check('换算只改幅度阈值，仍是 4 项（含宽松与合格线）',
+    afterCal.applied.length === 4, afterCal.applied.length + ' 项：' +
+      afterCal.applied.map((d) => d.path).join(' / '));
+  check('界面写明「重设了几项」，不是悄悄换了一把尺',
+    /重设/.test(afterCal.note) && /小明/.test(afterCal.note),
+    '"' + afterCal.note.replace(/\s+/g, ' ').slice(0, 60) + '"');
+  // 这一段跑在"没有手工调参"的前提下，所以不能说覆盖了它 —— 那句话会让老师以为自己调过
+  check('没有手工调参时不谎称「覆盖了调试台的手工调参」',
+    !/覆盖了调试台/.test(afterCal.note), '"' + afterCal.note.replace(/\s+/g, ' ').slice(0, 60) + '"');
+
+  const kidAfter = await runFrames(page, kidFrames);
+  check('★ 校准后同一串动作数到 3 次（校准前是 0 次）',
+    kidAfter.count === 3, 'count=' + kidAfter.count);
+
+  // 各人各用各的尺：小红没校准 → 回到文件默认
+  await page.evaluate(() => window.__counter.setStudent('小红'));
+  const other = await page.evaluate(() => ({
+    thr: window.__counter.thresholds,
+    applied: window.__counter.profileApplied.length,
+  }));
+  check('★ 换到没校准过的学生 → 阈值回到文件默认（不会串用上一个孩子的）',
+    other.thr.stand.gte === 158 && other.thr.bottom.lte === 100 && other.applied === 0,
+    JSON.stringify(other.thr));
+
+  await page.evaluate(() => window.__counter.setStudent('小明'));
+  const backToMing = await page.evaluate(() => window.__counter.profileApplied.length);
+  check('切回小明 → 他的校准还在，阈值重新套上', backToMing === 4, backToMing + ' 项');
+
+  // 幅度太小的校准必须被拒，且不留档
+  await page.evaluate(() => window.__counter.setStudent('小刚'));
+  await page.evaluate(() => window.__counter.calStart());
+  await page.evaluate((f) => window.__counter.feed(f), repsFrames({
+    signalNames: sqSig, driver: [{ signal: 'kneeAngle' }],
+    start: 165, extreme: 152, reps: 3, periodMs: 2000,
+  }));
+  const tooSmall = await page.evaluate(() => window.__counter.calStop());
+  const gangPf = await page.evaluate(() => window.__counter.profileOf('squat'));
+  check('★ 只动了 13° 的校准被拒，且不留档（存坏校准比不存更糟）',
+    tooSmall === null && gangPf === null, 'profile=' + JSON.stringify(gangPf));
+  const failNote = await page.evaluate(() => window.__counter.profileNoteText);
+  check('失败原因说人话（不是只说「失败」）', /幅度太小/.test(failNote),
+    '"' + failNote.replace(/\s+/g, ' ').slice(0, 44) + '"');
+
+  // 采集途中换动作 → 已采帧作废，不能把深蹲的满程记到俯卧撑头上
+  await page.evaluate(() => window.__counter.setStudent('小明'));
+  await page.evaluate(() => window.__counter.calStart());
+  await page.evaluate((f) => window.__counter.feed(f), kidFrames.slice(0, 40));
+  await page.evaluate(() => window.__counter.setExercise('pushup'));
+  const dropped = await page.evaluate(() => ({
+    active: window.__counter.calActive, samples: window.__counter.calSamples,
+  }));
+  check('★ 采集途中切动作 → 采集作废，不会把上一个动作的满程记到新动作上',
+    dropped.active === false && dropped.samples === 0, JSON.stringify(dropped));
+
+  await page.evaluate(() => window.__counter.setExercise('wall_sit'));
+  const holdNote = await page.evaluate(() => window.__counter.profileNoteText);
+  check('计时动作明确说「没有幅度可校准」', /计时类/.test(holdNote),
+    '"' + holdNote.replace(/\s+/g, ' ').slice(0, 40) + '"');
+
+  // 运行记录里必须写明这次用的是谁的校准 —— 否则事后看 effective 参数会以为是配置坏了
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+  await page.evaluate(() => window.__counter.setStudent('小明'));
+  await page.evaluate(() => window.__counter.clearRuns());
+  await page.evaluate(() => window.__counter.beginRunNow());
+  await page.evaluate((f) => window.__counter.feed(f), kidFrames);
+  await page.evaluate(() => window.__counter.endRunNow('stopped'));
+  const runWithPf = await page.evaluate(() => window.__counter.runs[0]);
+  check('★ 运行记录写明「用了谁的校准、改了几项、改成了什么」',
+    !!(runWithPf.config.profile && runWithPf.config.profile.studentId === '小明' &&
+      runWithPf.config.profile.applied === 4 &&
+      runWithPf.config.profile.changes.length === 4),
+    runWithPf.config.profile
+      ? 'student=' + runWithPf.config.profile.studentId + '，applied=' + runWithPf.config.profile.applied
+      : '缺失');
+  check('运行记录里同时留着 profile 与有效参数（两者对不上时能解释清楚）',
+    !!(runWithPf.config.effective.fsm && runWithPf.config.effective.fsm.phases.bottom.enter.lte > 100),
+    'effective bottom=' + runWithPf.config.effective.fsm.phases.bottom.enter.lte);
+
+  // 删除 → 回到文件默认（走按钮，和老师真实路径一致）。
+  // 先给另一个学生也存一份，才能验证「删一个不牵连另一个」。
+  await page.evaluate(() => window.__counter.putProfile('小红', 'squat', 128, 168));
+  await page.evaluate(() => document.getElementById('btnCalDel').click());
+  await page.waitForFunction('window.__counter.profileApplied.length === 0', null, { timeout: 5000 });
+  const afterDel = await page.evaluate(() => ({
+    thr: window.__counter.thresholds,
+    student: window.__counter.student,
+    students: window.__counter.students.map((s) => s.id),
+  }));
+  check('删除此人校准 → 阈值回默认、学生清空，另一人的档案不受影响',
+    afterDel.thr.stand.gte === 158 && afterDel.student === '' &&
+      afterDel.students.length === 1 && afterDel.students[0] === '小红',
+    JSON.stringify(afterDel));
+
+  const studentStored = await page.evaluate(() => localStorage.getItem('spc.student.v1'));
+  check('删掉学生后本地存档里的选择也清空（不会下次打开又套上已删的校准）',
+    studentStored === '', '"' + studentStored + '"');
+
+  // 收尾：把自己造的状态清干净，别污染后面的用例
+  // （这里踩过一次：留下的一份运行记录让 [F1b]「停止后自动留一份」变成 2 份）
+  await page.evaluate(() => window.__counter.clearStudents());
+  await page.evaluate(() => window.__counter.clearRuns());
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+
   // ---- 多通道：原地高抬腿 ----
   console.log('\n[B2] 多通道：原地高抬腿（左右腿各跑一个状态机）');
   await page.evaluate(() => window.__counter.setExercise('high_knee'));

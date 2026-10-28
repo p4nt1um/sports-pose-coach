@@ -96,7 +96,8 @@ export function summarizeRhythm(listOfTransitions, cap = RHYTHM_CAP) {
  * @param {object|null} [meta.env]     { ua, dpr, screen, hwConcurrency, tzOffsetMin }
  */
 export function createRun(meta = {}) {
-  const { at, exercise = {}, cfg = {}, appliedCustom = 0, patch = null, engine = null, env = null } = meta;
+  const { at, exercise = {}, cfg = {}, appliedCustom = 0, patch = null,
+    profile = null, engine = null, env = null } = meta;
   return {
     schema: RUN_SCHEMA,
     startedAt: iso(at),
@@ -112,6 +113,11 @@ export function createRun(meta = {}) {
       appliedCustom: Number(appliedCustom) || 0,
       // 两个都留：patch 回答"改了哪几项"，effective 回答"当时在用的到底是什么"
       patch: patch || null,
+      /**
+       * 学生校准。**必须留**：套了 profile 之后 effective.fsm 与 exercises.json
+       * 对不上，谁看都会以为是配置坏了。这一段解释"为什么这次的阈值和文件不一样"。
+       */
+      profile: profile || null,
       effective: {
         primary: cfg.primary || null,
         channelIds: (cfg.channels || []).map((c) => c.id),

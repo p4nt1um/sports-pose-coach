@@ -231,6 +231,20 @@
     </div>
 
     <div class="card">
+      <h3>学生校准<span class="tag">按本人满程</span></h3>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <select id="selStudent" style="flex:1 1 130px"></select>
+        <input id="inpStudent" placeholder="或输入姓名 / 座号" maxlength="12"
+               style="flex:1 1 110px">
+      </div>
+      <div class="row" style="gap:6px;margin-top:6px">
+        <button class="btn small" id="btnCal">开始校准</button>
+        <button class="btn small" id="btnCalDel">删除此人校准</button>
+      </div>
+      <div class="muted" id="calNote" style="font-size:12px;line-height:1.55;margin-top:6px"></div>
+    </div>
+
+    <div class="card">
       <h3>运行记录<span class="tag">排查用</span></h3>
       <div class="muted" style="font-size:12px;line-height:1.55;margin-bottom:8px">
         每次「打开摄像头 → 停止」自动留一份：当时的<b>生效参数</b>、画面分辨率、推理耗时、成绩与节奏。
@@ -249,6 +263,11 @@
 import { PoseEngine, CameraSource } from './shared/tpc-core.js';
 import { SignalSet } from './shared/tpc-signals.js';
 import { createTracker, modeOf, supportsLoose } from './shared/tpc-counter.js';
+// 自校准：把阈值从「绝对角度」翻译成「在本人满程上的位置」
+import {
+  ProfileStore, learnProfile, deriveThresholds, applyProfile,
+  describeProfile, isProfileUsable, memoryStorage,
+} from './shared/tpc-profile.js';
 import { computeLayout, resizeCanvas, drawPoses } from './shared/tpc-draw.js';
 // 与调试台共用同一份存档：老师在那页调好的阈值，这页直接生效
 import { TunedStore } from './shared/tpc-store.js';
@@ -380,6 +399,18 @@ function beginRun() {
     appliedCustom,
     // 只取 patch：这是"老师改过哪几项"。全量在 createRun 里另存为 effective
     patch: rec && rec.patch ? rec.patch : null,
+    /**
+     * 学生校准：不留这一段的话，effective.fsm 会与 exercises.json 对不上，
+     * 事后看运行记录只会得出"配置坏了"这个错误结论。
+     */
+    profile: profileApplied.length
+      ? {
+        studentId: currentStudent,
+        applied: profileApplied.length,
+        // 只存被改的那几项（path/from/to），不存整份 profile —— 排查要的是"改了什么"
+        changes: profileApplied.map((d) => ({ path: d.path, from: d.from, to: d.to })),
+      }
+      : null,
     engine: {
       model: 'full',
       delegate: engine ? engine.delegateInUse : null,
@@ -623,9 +654,213 @@ function renderLooseNote() {
     '<br>合格率分母只算已计入的动作，被拒（太快/停住）的不算进去。';
 }
 
+/* ==================== 学生校准：用本人满程当基准 ==================== */
+/*
+ * 为什么需要：阈值是绝对值（膝角 100°、肘角 116°）。同一个 100° 对 6 岁和 12 岁
+ * 是完全不同的幅度，所以会出现「明明做对了却不计数」。
+ *
+ * 做法不是"给小孩子调低阈值"（那要老师手工试错，而且换个孩子又得重来），
+ * 而是：让学生做 3 次 → 量出他自己的满程 → 把文件里那些绝对值按比例映射到
+ * 他的满程上。同一个孩子换了动作，也要各校各的（深蹲的满程不能拿来算俯卧撑）。
+ *
+ * 三条容易踩的坑，代码里都留了注释：
+ *   ① 校准**不能依赖状态机**。学生够不到成人阈值时状态机根本不产生一次动作，
+ *      用它取满程会永远校准不出来 —— 所以这里是直接采原始信号。
+ *   ② 校准数据可能是垃圾（只抖了两下）。质量闸门在 tpc-profile.js 里，不在界面，
+ *      因为界面只能"提示"，闸门才是"拒绝"。
+ *   ③ 套了 profile 之后 effective 参数与文件默认不一样了。运行记录必须写明
+ *      是哪个学生、改了几项，否则排查的人会以为是配置坏了。
+ */
+
+const STUDENT_KEY = 'spc.student.v1';
+
+/** localStorage 不可用时退回内存版：本次会话内仍能校准，只是刷新后丢 */
+let profileStore;
+try {
+  profileStore = new ProfileStore(localStorage);
+} catch (e) {
+  profileStore = new ProfileStore(memoryStorage());
+}
+
+let currentStudent = '';      // 当前选中的学生 id（空 = 用文件默认阈值）
+let calActive = false;        // 正在采集
+let calSamples = [];          // 采集到的原始信号（逐帧）
+let profileApplied = [];      // 本次动作里被 profile 重设的阈值（差异清单）
+
+function loadStudentPref() {
+  try { return localStorage.getItem(STUDENT_KEY) || ''; }
+  catch (e) { return ''; }
+}
+function saveStudentPref(id) {
+  try { localStorage.setItem(STUDENT_KEY, id || ''); } catch (e) { /* 忽略 */ }
+}
+
+/** 这个名字能不能当学生标识：去空格、限长，空的不算 */
+function normStudent(raw) {
+  return String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ').slice(0, 12);
+}
+
+/**
+ * 把 profile 套到当前动作上。**必须在 loadExercise 里、调参存档之后调用** ——
+ * 顺序决定优先级：文件默认 → 调试台手工调参 → 学生校准。
+ * 手工调参是"这个班的基准"，学生校准是"这个孩子的尺度"，后者更具体，所以放最上。
+ */
+function applyStudentProfile() {
+  profileApplied = [];
+  if (!currentStudent || !EX) return;
+  const pf = profileStore.get(currentStudent, EX.id);
+  if (!isProfileUsable(pf)) return;
+  const diffs = deriveThresholds(EX, pf);
+  if (!diffs.length) return;
+  EX = applyProfile(EX, pf);
+  profileApplied = diffs;
+}
+
+function renderStudentUI() {
+  const sel = el('selStudent');
+  const list = profileStore.list();
+  sel.innerHTML = ['<option value="">未选（用文件默认阈值）</option>']
+    .concat(list.map((s) => '<option value="' + esc(s.id) + '">' + esc(s.label) +
+      '（' + s.exercises.length + ' 个动作）</option>'))
+    .join('');
+  sel.value = currentStudent;
+  el('btnCal').textContent = calActive ? '结束并保存' : '开始校准';
+  el('btnCalDel').disabled = !currentStudent;
+  renderCalNote();
+}
+
+/**
+ * 校准状态那一段文字。每帧都会调用（采集时字数在变），所以只改 textContent，
+ * 不重建 select —— 重建会让下拉在采集期间莫名其妙地收起。
+ */
+function renderCalNote() {
+  const host = el('calNote');
+  if (!host) return;
+  const spec = EX && EX.calibration;
+  const hold = EX && modeOf(EX) === 'hold';
+
+  if (calActive) {
+    const sec = (calSamples.length / 30).toFixed(1);
+    host.innerHTML = '<span style="color:#fbbf24">正在采集：' + calSamples.length + ' 帧（约 ' +
+      sec + ' 秒）。让学生完整做 ' + ((spec && spec.reps) || 3) + ' 次，然后点「结束并保存」。</span>';
+    return;
+  }
+  if (hold) {
+    host.innerHTML = '这个动作是计时类，没有「幅度满程」可校准。';
+    return;
+  }
+  if (!spec) {
+    host.innerHTML = '这个动作还没配校准规格（data/exercises.json 缺 calibration 段）。';
+    return;
+  }
+
+  const who = currentStudent ? esc(currentStudent) : '';
+  const pf = currentStudent ? profileStore.get(currentStudent, EX.id) : null;
+  const usable = isProfileUsable(pf);
+
+  if (!currentStudent) {
+    host.innerHTML = '选一个学生（或输入姓名后开始校准）。不选就用文件默认阈值 —— ' +
+      '对成年人有效，对低年级孩子往往偏严。';
+    return;
+  }
+  if (!usable) {
+    host.innerHTML = '<b>' + who + '</b> 还没校准这个动作。点「开始校准」，让学生做 ' +
+      (spec.reps || 3) + ' 次，系统量出他自己的满程再重算阈值。';
+    return;
+  }
+
+  // describeProfile 自己就以「满程 …」开头，这里不要再加一遍前缀
+  host.innerHTML = '<b>' + who + '</b>：' + esc(describeProfile(pf, spec)) + '。' +
+    (profileApplied.length
+      // 有手工调参时说明"被覆盖了"，没有时别乱认账 —— 那句话会让老师以为自己调过
+      ? '本次按此重设了 <b>' + profileApplied.length + '</b> 项阈值' +
+        (appliedCustom ? '（覆盖了调试台的手工调参）' : '') + '。'
+      : '<span style="color:#fbbf24">这份校准对这个动作没用上</span>') +
+    '<br><span style="color:#9fb0c0">校准只改「幅度判断」，不改姿势要求与时间参数。</span>';
+}
+
+async function beginCalibration() {
+  if (!EX) return;
+  const spec = EX.calibration;
+  if (!spec || modeOf(EX) === 'hold') {
+    flash('这个动作没有可校准的幅度');
+    return;
+  }
+  // 名字优先取输入框（新学生），否则用下拉选中的
+  const typed = normStudent(el('inpStudent').value);
+  const id = typed || currentStudent;
+  if (!id) {
+    flash('先选一个学生，或者输入姓名 / 座号');
+    el('inpStudent').focus();
+    return;
+  }
+  if (typed && typed !== currentStudent) {
+    currentStudent = typed;
+    saveStudentPref(typed);
+    // 换了学生 → 阈值要重算。走 loadExercise 而不是就地改，保证只有一条路径。
+    // ★ 必须 await：loadExercise 开头会清掉采集标志，不等它跑完，下面刚设的
+    //   calActive=true 会被反手清掉，症状是「点了开始校准但一帧都采不到」。
+    await loadExercise(EX.id);
+  }
+  el('inpStudent').value = '';
+  calActive = true;
+  calSamples = [];
+  el('btnCal').textContent = '结束并保存';
+  flash('开始校准：请让学生完整做 ' + (spec.reps || 3) + ' 次，做完点「结束并保存」');
+  renderStudentUI();
+}
+
+/**
+ * 结束采集 → 学满程 → 存盘 → 重算阈值。
+ *
+ * 质量不合格时**不保存**，并把原因直接说出来（"幅度太小"、"没看出完整动作"）。
+ * 存一份坏校准比不存更糟：它看起来是"配好了"，实际让所有阈值塌到不用动。
+ */
+async function endCalibration() {
+  const spec = EX && EX.calibration;
+  calActive = false;
+  const samples = calSamples;
+  calSamples = [];
+  el('btnCal').textContent = '开始校准';
+
+  if (!spec || !samples.length) {
+    flash('没采集到数据，校准取消');
+    renderStudentUI();
+    return null;
+  }
+
+  const pf = learnProfile(samples, spec);
+  if (!pf.quality.ok) {
+    // 不保存。存一份坏校准比不存更糟：它看起来是"配好了"，
+    // 实际让所有阈值塌到几乎不用动，而且没有任何地方会报错。
+    flash('校准没成功：' + pf.quality.reasons[0] + '（未保存）');
+    el('calNote').innerHTML = '<span style="color:#f87171">校准失败：' +
+      esc(pf.quality.reasons.join('；')) + '</span><br>再点「开始校准」重来一次。';
+    return null;
+  }
+
+  profileStore.save(currentStudent, currentStudent, EX.id, pf);
+  // await：profileApplied 是 loadExercise 里算出来的，不等它跑完读到的是上一次的
+  await loadExercise(EX.id);
+  flash('校准成功：满程 ' + pf.range + (spec.unit || '') +
+    '，已按此重设 ' + profileApplied.length + ' 项阈值');
+  renderStudentUI();
+  return profileStore.get(currentStudent, EX.id);
+}
+
+async function deleteStudentProfile() {
+  if (!currentStudent) return;
+  const who = currentStudent;
+  profileStore.remove(currentStudent);
+  currentStudent = '';
+  saveStudentPref('');
+  await loadExercise(EX.id);
+  flash('已删除 ' + who + ' 的全部校准');
+  renderStudentUI();
+}
+
 /** 真实发声。必须保证回调一定触发 —— onend 在某些浏览器上会漏，所以补一个按字数估的兜底 */
-function realSay(text, done) {
-  try {
+function realSay(text, done) {  try {
     if (typeof speechSynthesis === 'undefined') { done(); return; }
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-CN';
@@ -701,6 +936,9 @@ function buildPicker() {
 
 async function loadExercise(id) {
   stopAll('switched');   // 切动作 = 上一次运行到此为止（成绩只到切换前）
+  // 采集途中换动作 → 已采的帧作废。不同动作的满程不能混着算，
+  // 混了会学出一个谁都不对应的跨度，而且不会报错。
+  if (calActive) { calActive = false; calSamples = []; }
   el('selExercise').value = id;
   FILE_DEFAULTS = deep(CFG_ALL.exercises[id]);
   EX = deep(CFG_ALL.exercises[id]);
@@ -712,6 +950,9 @@ async function loadExercise(id) {
     const rep = store.restore(EX, rec, FILE_DEFAULTS);
     appliedCustom = rep.applied.length;
   }
+
+  // ★ 学生校准叠在最上层（优先级：文件默认 → 调试台 → 本人校准）
+  applyStudentProfile();
 
   signalSet = new SignalSet(EX.signals);
   // 口径跟着动作走：换了不支持宽松的动作（如计时类）就自动退回严格
@@ -732,11 +973,17 @@ async function loadExercise(id) {
   el('chanRow').innerHTML = '';
   el('qualRow').innerHTML = '';
   renderLooseNote();
-  el('paramNote').innerHTML = appliedCustom
+  el('paramNote').innerHTML = (appliedCustom
     ? '<span class="okline">已套用 ' + appliedCustom + ' 项调试台自定义参数</span><br>' +
       '（' + esc(rec.savedAtText || '') + ' 保存）'
-    : '使用 data/exercises.json 里的默认参数。想让阈值更贴合本校标准，去调试台对着真人调一次。';
+    : '使用 data/exercises.json 里的默认参数。想让阈值更贴合本校标准，去调试台对着真人调一次。') +
+    // 学生校准改的是同一批阈值，不说清会让人以为「参数没生效」
+    (profileApplied.length
+      ? '<br><span class="okline">已按 ' + esc(currentStudent) + ' 的校准重设 ' +
+        profileApplied.length + ' 项阈值</span>'
+      : '');
 
+  renderStudentUI();
   renderAll();
 }
 
@@ -867,6 +1114,13 @@ function stepFrame(values, confidence, tMs) {
   const after = tracker.snapshot();
   const guideOn = el('chkGuide').checked;
 
+  // 校准采集走这里，**不经过状态机**：学生够不到成人阈值时状态机一次动作都不产生，
+  // 用它取满程会永远校准不出来。原始信号与判定无关，采到就行。
+  if (calActive) {
+    const v = after.value;
+    if (typeof v === 'number' && isFinite(v)) calSamples.push(v);
+  }
+
   if (!hold) {
     // 触发条件用「lastRep 是否换了一个对象」，而不是「count 是否变大」。
     // count 只在计数成功时才涨，而被拒绝（太快 / 停住 / 半程）的那一次
@@ -976,6 +1230,9 @@ function qualifyLine(s) {
 function renderAll() {
   renderReadouts();
   renderFeedback(tracker ? tracker.snapshot() : null);
+  // 采集时这一行每帧都在变（帧数/秒数），所以它跟着 renderAll 走；
+  // 选择框那些只在状态变化时重建（见 renderStudentUI 的注释）。
+  if (calActive) renderCalNote();
 }
 
 function renderReadouts() {
@@ -1148,6 +1405,28 @@ el('chkLoose').addEventListener('change', () => {
   saveLoosePref(el('chkLoose').checked);
   applyLooseMode(true);   // 必须出声说明：换口径会清零，静默清零最招人恨
 });
+
+/* ---------- 学生校准 ---------- */
+el('selStudent').addEventListener('change', (e) => {
+  currentStudent = e.target.value || '';
+  saveStudentPref(currentStudent);
+  // 换学生 = 换一把尺，必须重算阈值。走 loadExercise 保证只有一条生效路径。
+  loadExercise(EX.id).catch(() => {});
+});
+el('btnCal').addEventListener('click', () => {
+  const p = calActive ? endCalibration() : beginCalibration();
+  // 这两个都是 async（内部要重新加载动作），不接住会变成未捕获的 promise
+  Promise.resolve(p).catch((err) => flash('校准出错：' + (err.message || err)));
+});
+el('btnCalDel').addEventListener('click', () => {
+  deleteStudentProfile().catch((err) => flash('删除失败：' + (err.message || err)));
+});
+// 输入名字后直接回车 = 开始校准（老师上课没耐心点两次）
+el('inpStudent').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !calActive) {
+    beginCalibration().catch((err) => flash('校准出错：' + (err.message || err)));
+  }
+});
 el('selExercise').addEventListener('change', (e) => {
   loadExercise(e.target.value).catch((err) => {
     el('cameraHint').innerHTML = '<span class="err">' + esc(err.message || err) + '</span>';
@@ -1183,6 +1462,8 @@ store = new TunedStore();
   el('chkGuide').checked = prefs.guide;
   // 计数口径也要记住：老师带同一个班，不会每节课重勾一次
   el('chkLoose').checked = loadLoosePref();
+  // 上次选的学生也要记住（第一节是 小明，第二节还是他）
+  currentStudent = loadStudentPref();
   buildPicker();
   renderRecords();
   renderGuideLog();
@@ -1243,6 +1524,8 @@ window.__counter = {
   get runs() { return runs.slice(); },
   get currentRun() { return currentRun; },
   get inferMs() { return inferStats(); },
+  /** 手动开一份运行记录（自检用；正常路径是点「打开摄像头」） */
+  beginRunNow: () => { beginRun(); return !!currentRun; },
   /** 手动结账当前这次运行（自检用；正常路径是停止按钮/切动作/关页面） */
   endRunNow: (reason) => endRun(reason || 'stopped'),
   clearRuns: () => { runs = []; saveRuns(runs); renderRunNote(); return runs.length; },
@@ -1257,6 +1540,48 @@ window.__counter = {
     applyLooseMode(false);
     return { loose: !!(tracker && tracker.loose), count: tracker ? tracker.count : 0 };
   },
+
+  /* ---------- 学生校准（自检与排查用） ---------- */
+
+  get students() { return profileStore.list(); },
+  get student() { return currentStudent; },
+  /** 选了谁就按谁算。会重新加载动作（阈值必须重算，不能就地改） */
+  async setStudent(id) {
+    currentStudent = normStudent(id) || '';
+    saveStudentPref(currentStudent);
+    await loadExercise(EX.id);
+    return { student: currentStudent, applied: profileApplied.length };
+  },
+  profileOf: (exId) => profileStore.get(currentStudent, exId || (EX && EX.id)),
+  /** 本次动作被 profile 重设的阈值（path/from/to），自检靠它断言"真的换了尺" */
+  get profileApplied() { return profileApplied.map((d) => ({ path: d.path, from: d.from, to: d.to })); },
+  get profileNoteText() { return (el('calNote') || {}).textContent || ''; },
+  /** 当前生效的相位阈值（对照用：有没有被 profile 改过一眼就看出来） */
+  get thresholds() {
+    const out = {};
+    if (!EX) return out;
+    for (const [ph, def] of Object.entries(EX.fsm.phases || {})) {
+      out[ph] = JSON.parse(JSON.stringify(def.enter || {}));
+    }
+    return out;
+  },
+  /** 开始采集。真实场景由按钮触发，自检直接调 */
+  calStart: () => beginCalibration(),
+  calStop: () => endCalibration(),
+  get calActive() { return calActive; },
+  get calSamples() { return calSamples.length; },
+  /** 直接用一份手造的数据存档（自检用，免得造 120 帧） */
+  putProfile(studentId, exId, p2, p98) {
+    const spec = CFG_ALL.exercises[exId || EX.id].calibration;
+    const pf = {
+      schema: 'spc-profile/1', signal: spec.signal, learnedAt: Date.now(),
+      samples: 90, seconds: 3, p2, p98, range: +(p98 - p2).toFixed(3), reversals: 5,
+      quality: { ok: true, reasons: [] },
+    };
+    profileStore.save(studentId, studentId, exId || EX.id, pf);
+    return pf;
+  },
+  clearStudents() { profileStore.data = { v: 1, students: {} }; profileStore._save(); currentStudent = ''; saveStudentPref(''); return 0; },
   /** 最近一次动作的向心/离心拆解（自检断言用；纯数据，不含括号里的教学措辞） */
   get lastTransitions() {
     if (!tracker) return null;

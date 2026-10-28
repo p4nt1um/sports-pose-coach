@@ -100,6 +100,13 @@
       },
 
       "primary": "kneeAngle",
+      "calibration": {
+        "signal": "kneeAngle",
+        "unit": "°",
+        "reps": 3,
+        "minRange": 25,
+        "refRange": { "min": 70, "max": 175 }
+      },
 
       "fsm": {
         "signal": "kneeAngle",
@@ -182,6 +189,13 @@
       },
 
       "primary": "ankleSpread",
+      "calibration": {
+        "signal": "ankleSpread",
+        "unit": " 肩宽",
+        "reps": 3,
+        "minRange": 0.25,
+        "refRange": { "min": 0.55, "max": 1.55 }
+      },
 
       "fsm": {
         "signal": "ankleSpread",
@@ -252,6 +266,13 @@
       },
 
       "primary": "elbowAngle",
+      "calibration": {
+        "signal": "elbowAngle",
+        "unit": "°",
+        "reps": 3,
+        "minRange": 15,
+        "refRange": { "min": 100, "max": 150 }
+      },
 
       "fsm": {
         "signal": "elbowAngle",
@@ -343,6 +364,13 @@
       },
 
       "primary": "torsoTilt",
+      "calibration": {
+        "signal": "torsoTilt",
+        "unit": "°",
+        "reps": 3,
+        "minRange": 12,
+        "refRange": { "min": 30, "max": 82 }
+      },
 
       "fsm": {
         "signal": "torsoTilt",
@@ -419,6 +447,13 @@
       },
 
       "primary": "kneeHeightL",
+      "calibration": {
+        "signal": "kneeHeightL",
+        "unit": "",
+        "reps": 3,
+        "minRange": 0.12,
+        "refRange": { "min": -0.2, "max": 0.5 }
+      },
 
       "channels": [
         { "id": "L", "label": "左腿", "signal": "kneeHeightL" },
