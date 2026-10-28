@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PhaseFsm, REJECT } from '../shared/tpc-fsm.js';
+import { PhaseFsm, REJECT, activeWindowMs } from '../shared/tpc-fsm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -307,8 +307,95 @@ for (const shift of [-10, 10]) {
   });
 }
 
-/* ------------------------------ 汇总 ------------------------------ */
+console.log('\n[8] 向心/离心拆解：先单测那一小块算法');
+{
+  const mk = (pairs) => pairs.map(([t, v]) => ({ t, v }));
 
+  // 「动 → 停 → 动」：中间 2 秒停顿必须被剔掉。
+  // 注意后半段要造得**明显更快**（250/s vs 100/s）：两段等速时峰值并列，
+  // 算法只能挑一段，这不是缺陷而是必然 —— 等速的两段本来就无从区分。
+  const dwell = mk([
+    [0, 0], [100, 10], [200, 20], [300, 30], [400, 40], [500, 50],
+    [600, 60], [700, 70], [800, 80], [900, 90], [1000, 100],
+    [1100, 100], [1300, 100], [1500, 100], [1700, 100], [1900, 100],
+    [2100, 100], [2300, 100], [2500, 100], [2700, 100], [2900, 100], [3000, 100],
+    [3100, 135], [3200, 160], [3300, 185], [3400, 210], [3500, 235], [3600, 260],
+  ]);
+  const d = activeWindowMs(dwell);
+  check('「动 1s → 停 2s → 动 0.6s」只认最后 0.6s', d.activeMs === 600 && d.rawMs === 3600,
+    'activeMs=' + d.activeMs + ' rawMs=' + d.rawMs);
+
+  // 匀速：整段都在动，不能凭空砍掉一段
+  const steady = activeWindowMs(mk(Array.from({ length: 31 }, (_, i) => [i * 100, i * 10])));
+  check('匀速运动时 activeMs 覆盖整段（不凭空截断）',
+    steady.activeMs === steady.rawMs && steady.rawMs === 3000,
+    'activeMs=' + steady.activeMs + ' rawMs=' + steady.rawMs);
+
+  // 一动不动：返回 null 而不是 0 —— 「没动」与「动了 0 毫秒」是两件事
+  const still = activeWindowMs(mk(Array.from({ length: 30 }, (_, i) => [i * 100, 100])));
+  check('全程不动时返回 null（不假装测到 0）',
+    still.activeMs === null && still.peakRate === 0,
+    'activeMs=' + still.activeMs + ' peakRate=' + still.peakRate);
+
+  check('样本太少时优雅降级（2 个点算不出速度）',
+    activeWindowMs(mk([[0, 0], [100, 5]])).activeMs === null &&
+    activeWindowMs(mk([[0, 0], [100, 5]])).rawMs === 100 &&
+    activeWindowMs([]).rawMs === 0 &&
+    activeWindowMs(null).activeMs === null, '4 种退化输入都没有异常');
+}
+
+console.log('\n[9] 节奏拆解端到端：底部停顿不属于任何一半');
+{
+  const back = (r) => r.transitions[0];
+  const forth = (r) => r.transitions[1];
+
+  const plain = run(squatSignal({ reps: 5, periodMs: 2000 })).fsm.lastRep;
+  check('无停顿：两个半程都拆出来，且与原始时长接近',
+    !!plain && Array.isArray(plain.transitions) && plain.transitions.length === 2 &&
+    Math.abs(back(plain).rawMs - back(plain).activeMs) <= 350 &&
+    Math.abs(forth(plain).rawMs - forth(plain).activeMs) <= 350,
+    '下放 raw ' + back(plain).rawMs + '/active ' + back(plain).activeMs +
+    '，起身 raw ' + forth(plain).rawMs + '/active ' + forth(plain).activeMs);
+
+  // 底部停 2 秒：raw 被撑长，active 仍是纯运动时间
+  const dwellRep = run(squatSignal({ reps: 5, periodMs: 4000, holdBottomMs: 2000 })).fsm.lastRep;
+  check('底部停 2 秒：raw 撑长了，active 没被撑长',
+    forth(dwellRep).rawMs - forth(dwellRep).activeMs >= 1800 &&
+    Math.abs(forth(dwellRep).activeMs - forth(plain).activeMs) <= 200,
+    '起身 raw ' + forth(dwellRep).rawMs + ' → active ' + forth(dwellRep).activeMs +
+    '（无停顿对照 ' + forth(plain).activeMs + '）');
+
+  check('底部停 2 秒：下降段（前半）不受影响',
+    Math.abs(back(dwellRep).rawMs - back(plain).rawMs) <= 200,
+    '下放 raw ' + back(dwellRep).rawMs + ' vs 对照 ' + back(plain).rawMs);
+
+  // 对称性：停顿搬到上边，就该由前半程吸收 —— 证明不是"固定扣某一边"
+  const topRep = run(squatSignal({ reps: 5, periodMs: 4000, holdTopMs: 2000 })).fsm.lastRep;
+  check('顶部停 2 秒：改由前半程吸收停顿（不是固定扣某一边）',
+    back(topRep).rawMs - back(topRep).activeMs >= 1800 &&
+    Math.abs(forth(topRep).activeMs - forth(plain).activeMs) <= 200,
+    '下放 raw ' + back(topRep).rawMs + ' → active ' + back(topRep).activeMs +
+    '，起身 active ' + forth(topRep).activeMs);
+
+  // 动词来自 exercises.json，不是代码写死的
+  check('两个半程都带教学动词（下放 / 起身）',
+    back(plain).label === '下放' && forth(plain).label === '起身',
+    JSON.stringify([back(plain).label, forth(plain).label]));
+
+  check('transitions 的相位方向与 cycle 一致',
+    back(plain).from === CFG.cycle[0] && back(plain).to === CFG.cycle[1] &&
+    forth(plain).from === CFG.cycle[1] && forth(plain).to === CFG.cycle[0],
+    back(plain).from + '→' + back(plain).to + ' / ' + forth(plain).from + '→' + forth(plain).to);
+
+  // 被判「停住不动」的那次也该给得出节奏：拒绝与拆解互不干扰
+  const tooSlow = run(squatSignal({ reps: 1, periodMs: 10500, holdBottomMs: 9000 })).fsm.lastRep;
+  check('被判「停住不动」的那次也给得出节奏（拒绝与拆解互不干扰）',
+    !!tooSlow && tooSlow.reject === REJECT.TOO_SLOW && Array.isArray(tooSlow.transitions) &&
+    tooSlow.transitions.length === 2,
+    'reject=' + (tooSlow && tooSlow.reject));
+}
+
+/* ------------------------------ 汇总 ------------------------------ */
 const failed = results.filter((r) => !r.ok);
 console.log('\n' + '='.repeat(64));
 console.log('结果：' + (results.length - failed.length) + '/' + results.length + ' 通过');

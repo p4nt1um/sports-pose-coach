@@ -232,7 +232,7 @@ import { computeLayout, resizeCanvas, drawPoses } from './shared/tpc-draw.js';
 // 与调试台共用同一份存档：老师在那页调好的阈值，这页直接生效
 import { TunedStore } from './shared/tpc-store.js';
 // 语音指导：把判定结果翻成一句人话，并把「播报」与「指导」排进同一条语音通道
-import { guideTextOf, guideForHold, GuideSpeaker } from './shared/tpc-guide.js';
+import { guideTextOf, guideForHold, GuideSpeaker, transitionTextOf } from './shared/tpc-guide.js';
 
 const VENDOR = '/vendor/';
 const REC_KEY = 'spc.records.v1';
@@ -292,7 +292,8 @@ function renderRecords() {
   if (!records.length) { host.innerHTML = '<div class="muted">还没有记录。</div>'; return; }
   const rows = records.slice(-8).reverse().map((r) => {
     const val = r.mode === 'hold' ? (r.ms / 1000).toFixed(1) + 's' : r.count + ' 次';
-    const flag = r.flags && r.flags ? '<span style="color:#b45309;font-size:11.5px"> · ' + esc(r.flags) + '</span>' : '';
+    const sub = [r.rhythm || '', r.flags || ''].filter(Boolean).join(' · ');
+    const flag = sub ? '<span style="color:#b45309;font-size:11.5px"> · ' + esc(sub) + '</span>' : '';
     return '<tr><td>' + esc(r.at) + '</td><td>' + esc(r.name) + '</td><td class="n">' + val + '</td></tr>' +
       (flag ? '<tr><td colspan="3" style="border:0;padding:0 0 4px">' + flag + '</td></tr>' : '');
   }).join('');
@@ -312,6 +313,9 @@ function recordNow(auto) {
   if (!hold && s.lastRep && s.lastRep.flags && s.lastRep.flags.length) {
     flags = s.lastRep.flags.map((f) => f.label).join('；');
   }
+  // 节奏随记录一起落地：导出 CSV 时老师才有"这一节课学生越做越快"的证据，
+  // 只存总次数根本看不出节奏问题。
+  const rhythm = hold ? '' : transitionTextOf(s.lastRep);
   records.push({
     at: stamp(),
     id: EX.id,
@@ -320,6 +324,7 @@ function recordNow(auto) {
     count: hold ? null : val,
     ms: hold ? val : null,
     flags,
+    rhythm,
   });
   saveRecords(records);
   renderRecords();
@@ -328,11 +333,12 @@ function recordNow(auto) {
 
 function exportCsv() {
   if (!records.length) { flash('还没有可导出的记录'); return; }
-  const head = '时间,动作,模式,计数,时长(秒),动作质量提示';
+  const head = '时间,动作,模式,计数,时长(秒),动作节奏,动作质量提示';
   const lines = records.map((r) => [
     r.at, r.name, r.mode === 'hold' ? '计时' : '计数',
     r.count == null ? '' : r.count,
     r.ms == null ? '' : (r.ms / 1000).toFixed(1),
+    (r.rhythm || '').replace(/,/g, '，'),
     (r.flags || '').replace(/,/g, '，'),
   ].join(','));
   const csv = '\uFEFF' + [head].concat(lines).join('\r\n');
@@ -723,9 +729,14 @@ function renderReadouts() {
       el('chanRow').innerHTML = s.channels.map((c) => '<span>' + esc(c.label) + '<b>' + c.count + '</b></span>').join('');
       el('subValue').textContent = '合计 ' + s.count + ' 次';
     } else {
-      el('subValue').textContent = s.lastRep
-        ? Math.round(s.lastRep.durationMs) + 'ms' + (s.lastRep.accepted ? ' · 计入' : ' · 已剔除')
-        : '—';
+      // 有节奏数据就先报节奏 —— 老师纠正动作时最先说的就是「下放太快」，
+      // 而这个数字比"完成段 1033ms"有用得多（后者还混着底部停顿）。
+      const rhythm = transitionTextOf(s.lastRep, { unit: 's' });
+      el('subLabel').textContent = rhythm ? '节奏' : '完成段';
+      el('subValue').textContent = rhythm
+        || (s.lastRep
+          ? Math.round(s.lastRep.durationMs) + 'ms' + (s.lastRep.accepted ? ' · 计入' : ' · 已剔除')
+          : '—');
     }
     el('diagValue').textContent = fmt(s.value, modeOf(EX) === 'hold' ? 1 : 2);
   }
@@ -788,10 +799,16 @@ function renderFeedback(s) {
 
   const rep = s.lastRep;
   if (!rep) { host.innerHTML = '<div class="muted">还没有完成动作。</div>'; return; }
+  // 节奏在「有标记」和「动作规范」两种情况下都给 —— 恰恰是被纠正的那一次，
+  // 老师才更需要同时看到「哪不对」和「快到什么程度」。
+  const rhythm = transitionTextOf(rep);
+  const rhythmLine = rhythm
+    ? '<div class="muted" style="padding:3px 2px 0;opacity:.85">节奏：' + esc(rhythm) + '</div>'
+    : '';
   if (rep.flags && rep.flags.length) {
     host.innerHTML = rep.flags.map((f) =>
       '<div class="fb' + (f.severity === 'info' ? ' info' : '') + '">' + esc(f.label) +
-      (f.value != null ? '（实测 ' + Math.round(f.value * 100) / 100 + '）' : '') + '</div>').join('');
+      (f.value != null ? '（实测 ' + Math.round(f.value * 100) / 100 + '）' : '') + '</div>').join('') + rhythmLine;
   } else if (rep.reject) {
     const map = {
       too_fast: '这次太快了，像抖动，没算',
@@ -799,9 +816,9 @@ function renderFeedback(s) {
       partial: '只看到了半个动作，没算',
       low_conf: '画面看不清，这一帧跳过了',
     };
-    host.innerHTML = '<div class="fb bad">' + esc(map[rep.reject] || rep.reject) + '</div>';
+    host.innerHTML = '<div class="fb bad">' + esc(map[rep.reject] || rep.reject) + '</div>' + rhythmLine;
   } else {
-    host.innerHTML = '<div class="fb good">动作规范，已记 ' + Math.round(rep.durationMs) + 'ms</div>';
+    host.innerHTML = '<div class="fb good">动作规范，已记 ' + Math.round(rep.durationMs) + 'ms' + '</div>' + rhythmLine;
   }
 }
 
@@ -919,6 +936,20 @@ window.__counter = {
   get cfg() { return EX; },
   get appliedCustom() { return appliedCustom; },
   get records() { return records.slice(); },
+  /** 最近一次动作的向心/离心拆解（自检断言用；纯数据，不含括号里的教学措辞） */
+  get lastTransitions() {
+    if (!tracker) return null;
+    const rep = tracker.snapshot().lastRep;
+    return rep && rep.transitions ? rep.transitions : null;
+  },
+  /** 界面同一份措辞，避免自检和界面各算一套 */
+  get rhythmText() {
+    return tracker ? transitionTextOf(tracker.snapshot().lastRep) : '';
+  },
+  /** 读数行用的短版（英文单位、无空格），与 subValue 显示的完全一致 */
+  get rhythmShort() {
+    return tracker ? transitionTextOf(tracker.snapshot().lastRep, { unit: 's' }) : '';
+  },
   get running() { return running; },
   get delegate() { return engine ? engine.delegateInUse : null; },
   setExercise: (id) => loadExercise(id),

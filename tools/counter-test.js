@@ -44,21 +44,29 @@ const ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, x)));
  * 一个周期 = 起始相位 → 极值 → 回到起始相位（与配置里的 minRepMs 口径一致）。
  * @param {string[]} signalNames 该动作的全部信号名（未驱动的一律置 null）
  * @param {object[]} driver [{signal, offsetMs}] —— 多通道用 offsetMs 错开相位
+ * @param {number} [holdBottomMs] 在极值处停留多久（造「底部歇一下」的真实节奏）
+ * @param {number} [holdTopMs]    在起始处停留多久
  */
 function repsFrames(opts) {
   const {
     signalNames, driver, start, extreme,
     reps, periodMs, fps = 30, preMs = 900, postMs = 700,
+    holdBottomMs = 0, holdTopMs = 0,
   } = opts;
   const dt = 1000 / fps;
-  const half = periodMs / 2;
+  const motionMs = Math.max(1, periodMs - holdBottomMs - holdTopMs);
+  const half = motionMs / 2;
   const maxOffset = Math.max(0, ...driver.map((d) => d.offsetMs || 0));
   const total = preMs + reps * periodMs + postMs + maxOffset;
 
   const at = (u) => {
     if (u < 0 || u >= reps * periodMs) return start;   // 前置/后置停在起始姿势
     const tl = u % periodMs;
-    const d = tl < half ? ease(tl / half) : 1 - ease((tl - half) / half);
+    let d;
+    if (tl < half) d = ease(tl / half);
+    else if (tl < half + holdBottomMs) d = 1;
+    else if (tl < half + holdBottomMs + half) d = 1 - ease((tl - half - holdBottomMs) / half);
+    else d = 0;
     return start + (extreme - start) * d;
   };
 
@@ -279,6 +287,55 @@ async function stepwise(page, frames) {
   }));
   check('静立不动 → 0', still.count === 0, 'count=' + still.count);
 
+  /* ---------------- B1b. 节奏拆解：底部停顿不进任何一半 ---------------- */
+  console.log('\n[B1b] 节奏拆解：界面报「下放几秒 / 起身几秒」');
+
+  const plainRep = await runFrames(page, repsFrames({
+    signalNames: sqSig, driver: [{ signal: 'kneeAngle' }],
+    start: 172, extreme: 85, reps: 5, periodMs: 2000,
+  }));
+  const trPlain = await page.evaluate(() => window.__counter.lastTransitions);
+  check('无停顿的深蹲也给出两个半程',
+    Array.isArray(trPlain) && trPlain.length === 2 && trPlain.every((t) => t.activeMs > 0),
+    trPlain ? trPlain.map((t) => t.label + ' ' + t.activeMs + 'ms').join(' / ') : 'null');
+
+  const dwellRep = await runFrames(page, repsFrames({
+    signalNames: sqSig, driver: [{ signal: 'kneeAngle' }],
+    start: 172, extreme: 85, reps: 5, periodMs: 4000, holdBottomMs: 2000,
+  }));
+  const trDwell = await page.evaluate(() => window.__counter.lastTransitions);
+  check('底部停 2 秒：raw 被撑长，active 没被撑长',
+    dwellRep.count === 5 && trDwell &&
+    trDwell[1].rawMs - trDwell[1].activeMs >= 1800 &&
+    Math.abs(trDwell[1].activeMs - trPlain[1].activeMs) <= 250,
+    '起身 raw ' + trDwell[1].rawMs + ' → active ' + trDwell[1].activeMs +
+    '（无停顿对照 ' + trPlain[1].activeMs + '），count=' + dwellRep.count);
+
+  const rhythmDom = await page.evaluate(() => ({
+    label: document.getElementById('subLabel').textContent.trim(),
+    value: document.getElementById('subValue').textContent.trim(),
+    fb: document.getElementById('fbList').innerText.replace(/\s+/g, ' ').trim(),
+    short: window.__counter.rhythmShort,
+    long: window.__counter.rhythmText,
+  }));
+  check('界面把「节奏」当成一行读数报出来（不是只写在调试台）',
+    rhythmDom.label === '节奏' && /下放/.test(rhythmDom.value) && /起身/.test(rhythmDom.value),
+    '「' + rhythmDom.label + '」= ' + rhythmDom.value);
+  check('反馈卡里也带节奏（老师看完这一句就知道该纠正什么）',
+    /节奏/.test(rhythmDom.fb) && /下放/.test(rhythmDom.fb), '"' + rhythmDom.fb.slice(0, 70) + '"');
+  check('读数行与纯函数同一份措辞（不是各算一套）',
+    rhythmDom.value === rhythmDom.short && /秒/.test(rhythmDom.long),
+    '读数行 "' + rhythmDom.value + '" / 短版 "' + rhythmDom.short + '" / 长版 "' + rhythmDom.long + '"');
+
+  const stored = await page.evaluate(() => {
+    window.__counter.record();
+    const r = window.__counter.records;
+    const last = r.length ? r[r.length - 1] : null;
+    window.__counter.clearRecords();   // 别把这条记录留给后面的 [E] 用例
+    return last;
+  });
+  check('节奏随成绩一起存下来（导出 CSV 才有据可查）',
+    stored && /下放/.test(stored.rhythm || ''), stored ? '"' + stored.rhythm + '"' : 'null');
   const zeroed = await page.evaluate(() => window.__counter.zero());
   check('清零 → 计数归零、界面同步', zeroed.count === 0, 'count=' + zeroed.count);
   const zeroNum = await page.evaluate(() => window.__counter.bigNumText());

@@ -39,6 +39,54 @@
 /** 尚未认出相位。人在画面外、刚启动、丢失超时后都回到这里 */
 export const PHASE_UNKNOWN = 'unknown';
 
+/**
+ * 从一段信号轨迹里量「真正在动」的时长。
+ *
+ * 为什么要这么绕：状态机只知道阈值穿越，"进入末相位 → 回到起始相位"的原始时长
+ * 里混着**底部停顿**。举重/深蹲/俯卧撑里在最低点歇 2 秒是常事，
+ * 而教学语言要的是「下放 1.2 秒、起身 0.8 秒」——停顿不能算进任何一半。
+ *
+ * 做法（借自 vision-demos 的 chin_ups / push_ups）：取速度最快的那一点，
+ * 往两边走到速度落到最快值 10% 以下的位置，这一段就是"真正在动"的窗口。
+ *
+ * @param {{t:number, v:number}[]} samples 时间严格递增
+ * @param {number} ratio 视为"还没停下来"的速度比例，默认 0.1
+ * @returns {{activeMs:number|null, rawMs:number, peakRate:number|null, samples:number}}
+ */
+export function activeWindowMs(samples, ratio = 0.1) {
+  const raw = { activeMs: null, rawMs: 0, peakRate: null, samples: samples ? samples.length : 0 };
+  if (!samples || samples.length < 4) {
+    if (samples && samples.length >= 2) {
+      raw.rawMs = Math.round(samples[samples.length - 1].t - samples[0].t);
+    }
+    return raw;
+  }
+  raw.rawMs = Math.round(samples[samples.length - 1].t - samples[0].t);
+
+  const speeds = [];
+  for (let i = 1; i < samples.length; i++) {
+    const dt = (samples[i].t - samples[i - 1].t) / 1000;
+    if (dt <= 1e-4) continue;
+    speeds.push({ t0: samples[i - 1].t, t1: samples[i].t, v: Math.abs((samples[i].v - samples[i - 1].v) / dt) });
+  }
+  if (!speeds.length) return raw;
+
+  let peakIdx = 0;
+  for (let i = 1; i < speeds.length; i++) if (speeds[i].v > speeds[peakIdx].v) peakIdx = i;
+  const peak = speeds[peakIdx].v;
+  raw.peakRate = peak;
+  // 整段都几乎不动（站住/撑住）→ 没有"在动的窗口"，返回 null 而不是 0，别假装测到了
+  if (!(peak > 1e-6)) return raw;
+
+  const th = peak * ratio;
+  let i = peakIdx;
+  while (i > 0 && speeds[i - 1].v >= th) i--;
+  let j = peakIdx;
+  while (j < speeds.length - 1 && speeds[j + 1].v >= th) j++;
+  raw.activeMs = Math.round(speeds[j].t1 - speeds[i].t0);
+  return raw;
+}
+
 /** 拒绝原因：用于回答"动作做了但没计数" */
 export const REJECT = {
   TOO_FAST: 'too_fast',         // 周期短于 minRepMs → 判定为抖动
@@ -121,6 +169,14 @@ export class PhaseFsm {
     this._repMin = null;
     this._repMax = null;
     this._repGuardMap = new Map();
+    /**
+     * 最近一段信号轨迹，用来量「向心/离心」时长（避开底部停顿）。
+     * 只存可信帧；容量按 maxRepMs 截断，最坏情况下也就几百个点。
+     */
+    this._hist = [];
+    /** 本轮起始相位的进入时刻，以及上一轮的（对比用） */
+    this._cycleStartAt = 0;
+    this._prevCycleStart = 0;
     this._emit('reset', 0, {});
   }
 
@@ -197,6 +253,7 @@ export class PhaseFsm {
     this.lost = false;
     this.lastGoodAt = tMs;
     this.phaseFrames++;
+    this._pushHist(tMs, raw);
 
     const def = this.cfg.phases;
     const n = this.cfg.cycle.length;
@@ -254,6 +311,21 @@ export class PhaseFsm {
     return this._snapshot(before);
   }
 
+  /** 记录可信帧的轨迹（给向心/离心时长用） */
+  _pushHist(t, v) {
+    this._hist.push({ t, v });
+    const keepMs = Math.max(this.cfg.maxRepMs || 12000, 4000) * 1.2;
+    while (this._hist.length && this._hist[0].t < t - keepMs) this._hist.shift();
+    if (this._hist.length > 1500) this._hist.splice(0, this._hist.length - 1500);
+  }
+
+  /** 取 [ta, tb] 区间内的轨迹并量出"真正在动"的时长 */
+  _window(ta, tb) {
+    if (!ta || !tb || tb <= ta) return { activeMs: null, rawMs: 0, peakRate: null, samples: 0 };
+    const seg = this._hist.filter((p) => p.t >= ta && p.t <= tb);
+    return activeWindowMs(seg, 0.1);
+  }
+
   /** 记录一次 rep 内主信号的极值，用于判断"蹲到位没有" */
   _trackExtremes(v) {
     if (v === null || !isFinite(v)) return;
@@ -268,6 +340,14 @@ export class PhaseFsm {
     this.phaseFrames = 0;
     this.pendingIdx = -1;
     this.pendingFrames = 0;
+    if (idx === 0) {
+      // 回到起始相 = 新一轮开始。旧的那一轮起始时刻留一份给"上一半"用
+      this._prevCycleStart = this._cycleStartAt || tMs;
+      this._cycleStartAt = tMs;
+    } else if (!this._cycleStartAt) {
+      // 开局就处在末相位（例如一进来就蹲着）：起始时刻未知，只能记 None
+      this._cycleStartAt = 0;
+    }
     if (!silent) this._emit('phase', tMs, { to: phaseId, index: idx });
   }
 
@@ -276,6 +356,9 @@ export class PhaseFsm {
     const nextPhase = this.cfg.cycle[nextIdx];
     // 离开前所在相位的停留时长（必须在 _enterPhase 之前取）
     const dwellMs = this.phaseEnteredAt ? tMs - this.phaseEnteredAt : 0;
+    // 这两个也必须在 _enterPhase 之前取：它会改写 _cycleStartAt
+    const cycleStartAt = this._cycleStartAt;
+    const lastPhaseAt = this.lastPhaseAt;
 
     this._enterPhase(nextPhase, nextIdx, tMs);
 
@@ -327,6 +410,38 @@ export class PhaseFsm {
         accepted: false,
         reject: null,
       };
+
+      /**
+       * 向心 / 离心拆解。
+       * 每个"半程"给出两个数：`rawMs`（阈值穿越的原始时长，混着停顿）与
+       * `activeMs`（速度回推到峰值 10% 以内，真正的运动时间）。
+       * 教学上要的是后者：「下放 1.2 秒、起身 0.8 秒」。
+       *
+       * 只在两相位动作（深蹲/俯卧撑/开合跳/仰卧起坐/高抬腿）上拆解。
+       * 相位更多时方向不是"下去/起来"这种简单对偶，硬拆会给出误导性的话。
+       */
+      if (this.cfg.cycle.length === 2) {
+        const back = this._window(cycleStartAt, lastPhaseAt);
+        const forth = this._window(lastPhaseAt, tMs);
+        const c0 = this.cfg.cycle[0];
+        const c1 = this.cfg.cycle[1];
+        // verb 是给老师看的动词（「下放」「起身」），写在 exercises.json 里。
+        // 没写就退回相位名，宁可生硬也不编造词。
+        const verb = Array.isArray(this.cfg.verb) ? this.cfg.verb : [];
+        const pname = (p) => (this.cfg.phases[p] && this.cfg.phases[p].label) || p;
+        rep.transitions = [
+          {
+            from: c0, to: c1,
+            label: verb[0] || pname(c0) + '→' + pname(c1),
+            rawMs: back.rawMs, activeMs: back.activeMs, peakRate: back.peakRate,
+          },
+          {
+            from: c1, to: c0,
+            label: verb[1] || pname(c1) + '→' + pname(c0),
+            rawMs: forth.rawMs, activeMs: forth.activeMs, peakRate: forth.peakRate,
+          },
+        ];
+      }
 
       if (!this.armed) {
         // 没观测到离开起始相位：只有半个动作（例如开局就蹲着、随后站起来）

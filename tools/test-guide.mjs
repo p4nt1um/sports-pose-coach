@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   speakTextOf, pickGuardFlag, guideTextOf, guideForHold, GuideSpeaker, REJECT_SPEAK,
+  transitionTextOf,
 } from '../shared/tpc-guide.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -241,6 +242,45 @@ console.log('\n[5d] 计时类没有 reject，也不该走检查');
   const sp = new GuideSpeaker({ say: (t) => made.push(t), cancel: () => {}, cooldownMs: 5000 });
   check('空文本不入队', sp.speak('', { priority: 2, atMs: 1 }) === false &&
     sp.speak(null, { priority: 2, atMs: 1 }) === false && made.length === 0);
+}
+
+console.log('\n[6] 节奏翻译：毫秒数 → 老师能对上拍子的话');
+{
+  const rep = (ts) => ({ transitions: ts });
+  const T = (label, activeMs, rawMs = activeMs + 500) => ({ label, activeMs, rawMs });
+
+  check('两个半程都说出来，且用秒不用毫秒',
+    transitionTextOf(rep([T('下放', 733), T('起身', 767)])) === '下放 0.73 秒 / 起身 0.77 秒',
+    transitionTextOf(rep([T('下放', 733), T('起身', 767)])));
+
+  check('去尾零，读起来不像机器报表',
+    transitionTextOf(rep([T('下放', 1500), T('起身', 2000)])) === '下放 1.5 秒 / 起身 2 秒',
+    transitionTextOf(rep([T('下放', 1500), T('起身', 2000)])));
+
+  check('不带名字时只报两个数（界面小行用）',
+    transitionTextOf(rep([T('下放', 733), T('起身', 767)]), { withLabel: false, unit: 's' }) === '0.73s / 0.77s',
+    transitionTextOf(rep([T('下放', 733), T('起身', 767)]), { withLabel: false, unit: 's' }));
+
+  // 一个半程量不出来就整条不提 —— 缺一半的节奏比没有更容易误导人
+  check('某个半程量不出来（activeMs=null）时整条不提，不写占位符',
+    transitionTextOf(rep([T('下放', 733), { label: '起身', activeMs: null, rawMs: 3000 }])) === '',
+    '得到空串');
+
+  check('没有 transitions 字段时返回空串（老数据 / 计时类都不炸）',
+    transitionTextOf({}) === '' && transitionTextOf(null) === '' &&
+    transitionTextOf(undefined) === '' && transitionTextOf({ transitions: [] }) === '',
+    '4 种缺数据情形都安全');
+
+  // 真实配置跑一遍：动词来自 JSON，不是代码写死的
+  const other = [['pushup', '下放', '撑起'], ['situp', '坐起', '躺下'], ['high_knee', '抬腿', '落腿'],
+    ['jumping_jack', '打开', '收回']];
+  const wrong = [];
+  for (const [id, a, b] of other) {
+    const v = (EX[id].fsm && EX[id].fsm.verb) || [];
+    if (v[0] !== a || v[1] !== b) wrong.push(id + ' → ' + JSON.stringify(v));
+  }
+  check('其余四个动作的动词也对得上相位方向', wrong.length === 0,
+    wrong.length ? wrong.join(' / ') : '俯卧撑 下放/撑起、仰卧起坐 坐起/躺下、高抬腿 抬腿/落腿、开合跳 打开/收回');
 }
 
 /* ============================ 汇总 ============================ */

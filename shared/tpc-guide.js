@@ -103,6 +103,46 @@ export function guideTextOf(rep) {
 }
 
 /**
+ * 把一次动作的「向心 / 离心」时长说成人话。
+ *
+ * 为什么单独给个函数：状态机报的是毫秒数，而教学场景里老师说的是
+ * 「下放快了一点，起身还行」。要说出这句话，必须把
+ *   ① 阈值穿越的原始时长 → ② 扣掉底部停顿后的运动时长
+ * 这一步做完（在 tpc-fsm 的 activeWindowMs 里做），这里只负责措辞。
+ *
+ * 刻度选择有讲究：
+ *   · 用秒不用毫秒 —— 「0.73 秒」老师能对上节奏感，「733 毫秒」对不上。
+ *   · 保留两位、去掉末尾的 0 —— 0.70 → 0.7，1.50 → 1.5，读起来不像机器报表。
+ *   · 一个半程量不出来（关键点中途丢失）就整条不提，不写「—」占位。
+ *     缺一半的节奏描述比没有更容易误导人。
+ *
+ * @param {object} rep 状态机吐出的 lastRep
+ * @param {{withLabel?:boolean, unit?:string}} [opts]
+ * @returns {string} 空串表示这次没有可说的节奏信息
+ */
+export function transitionTextOf(rep, opts = {}) {
+  const { withLabel = true, unit = '秒' } = opts;
+  const ts = rep && Array.isArray(rep.transitions) ? rep.transitions : null;
+  if (!ts || !ts.length) return '';
+
+  // 去掉所有尾零再去掉空小数点：2.00 → 2、1.50 → 1.5、0.70 → 0.7。
+  // 只去一个 0 会留下 "2.0"，读起来仍是机器味。
+  const sec = (ms) => (ms / 1000).toFixed(2).replace(/\.?0+$/, '') || '0';
+  // 中文单位前留一个空格（「0.73 秒」），英文单位紧贴（「0.73s」）——
+  // 这是中文排版惯例，不是随手写的，别改成统一加/不加。
+  const glue = /^[A-Za-z]/.test(unit) ? '' : ' ';
+
+  const parts = [];
+  for (const t of ts) {
+    // activeMs 为 null = 这一段几乎没动（撑着不动），没有"节奏"可言
+    const ms = t && (t.activeMs == null ? null : t.activeMs);
+    if (ms == null || !(ms > 0)) return '';
+    parts.push((withLabel && t.label ? t.label + ' ' : '') + sec(ms) + glue + unit);
+  }
+  return parts.join(' / ');
+}
+
+/**
  * 计时类：判断这一段是不是「不合格地结束了」。
  *
  * 这里要克制，不能每段结束都喊一句。难点在于：

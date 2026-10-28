@@ -104,6 +104,7 @@
       "fsm": {
         "signal": "kneeAngle",
         "cycle": ["stand", "bottom"],
+      "verb": ["下放", "起身"],
         "phases": {
           "stand": { "enter": { "gte": 158 }, "label": "站立" },
           "bottom": { "enter": { "lte": 100 }, "label": "蹲到底" }
@@ -183,6 +184,7 @@
       "fsm": {
         "signal": "ankleSpread",
         "cycle": ["close", "open"],
+      "verb": ["打开", "收回"],
         "phases": {
           "close": { "enter": { "lte": 0.8 }, "label": "并腿" },
           "open": { "enter": { "gte": 1.25 }, "label": "开腿" }
@@ -250,6 +252,7 @@
       "fsm": {
         "signal": "elbowAngle",
         "cycle": ["up", "down"],
+      "verb": ["下放", "撑起"],
         "phases": {
           "up": { "enter": { "gte": 132 }, "label": "撑起" },
           "down": { "enter": { "lte": 116 }, "label": "下降到最低点" }
@@ -338,6 +341,7 @@
       "fsm": {
         "signal": "torsoTilt",
         "cycle": ["lying", "up"],
+      "verb": ["坐起", "躺下"],
         "phases": {
           "lying": { "enter": { "gte": 68 }, "label": "躺平" },
           "up": { "enter": { "lte": 45 }, "label": "坐起" }
@@ -416,6 +420,7 @@
       "fsm": {
         "signal": "kneeHeightL",
         "cycle": ["down", "up"],
+      "verb": ["抬腿", "落腿"],
         "phases": {
           "down": { "enter": { "gte": 0.32 }, "label": "落地" },
           "up": { "enter": { "lte": -0.04 }, "label": "抬起（膝高于髋）" }

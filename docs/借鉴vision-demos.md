@@ -329,7 +329,10 @@ INFERENCE_HEIGHT = 1080     # ViTPose caps at a 2048px long edge
 **第二批（新增能力，3–5 天）**
 5. ✅ `lineDeviation` 信号类型 → 俯卧撑"髋下沉"能看出来（2026-10-28 落地：`pushup.bodyLine`
    从 `torsoLean` 换成 `lineDeviation`，并接入「身体不成一条直线」guard；计数照旧、只打标记）
-6. 向心/离心拆解（速度 10% 回推）→ 教学语言
+6. ✅ 向心/离心拆解（速度 10% 回推）→ 教学语言（2026-10-28 落地：`tpc-fsm.activeWindowMs`
+   从最快速度点往两边走到速度落到峰值 10% 以下，底部停顿不算进任何一半；
+   `rep.transitions` 带 `rawMs` / `activeMs` / 动词，界面报「下放 0.73 秒 / 起身 0.77 秒」，
+   随成绩记录与 CSV 一起落地。实测「底部歇 2 秒」→ 起身 raw 3033ms 但 active 仍是 767ms）
 7. `run.json`（每次运行的参数 + 时间）
 
 **第三批（决定产品上限，需要产品决策）**
