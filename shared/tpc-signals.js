@@ -14,10 +14,17 @@
  *    它们依赖"画面上 下 左 右"的语义，用归一化坐标才有稳定含义。
  *    再用同一坐标系里的一段长度（如腿长、肩宽）做归一化，消除距离影响。
  *
- * 左右侧的取法（side）是深蹲这类动作的关键：
+ * 左右侧的取法（side）：
  *  - "left"/"right" 取单侧
  *  - "min"/"max"/"mean" 两侧各算一次再归约
- *  侧拍时远侧腿常被遮挡，用 min（两膝取更小的角）比取平均稳得多。
+ *  - "auto" 哪侧看得清用哪侧（按置信度选，带粘滞）
+ *
+ * ⚠ 侧拍时远侧肢体会被躯干挡住，这一侧的读数是模型"猜"的，不是测的。
+ *   - 深蹲/仰卧起坐用 min（两侧腿都大致可见，取更弯的一侧更宽容）
+ *   - **俯卧撑必须用 auto**：平板支撑姿势下远侧手臂几乎必然被躯干压住，
+ *     min 会稳定地挑中那个猜出来的坏值，把主信号钳死在一个够不到阈值的区间里 ——
+ *     表现就是"怎么调都数不出来"，而且拒绝原因里一条记录都没有（静默失败）。
+ *   置信度也必须跟着"被选中的那一侧"走，不能取两侧最小值，否则一侧遮挡就冻结整条信号。
  */
 
 import { jointAngle, distance, midpoint, torsoInclination, clamp } from './tpc-math.js';
@@ -47,21 +54,91 @@ function sideList(side) {
   switch (side) {
     case 'left': return ['L'];
     case 'right': return ['R'];
-    default: return ['L', 'R'];   // min / max / mean 都要算两侧
+    default: return ['L', 'R'];   // min / max / mean / auto 都要算两侧
   }
 }
 
-function reduce(values, side) {
-  const v = values.filter((x) => x !== null && x !== undefined && isFinite(x));
-  if (!v.length) return null;
-  switch (side) {
-    case 'left': return v[0];
-    case 'right': return v[0];
-    case 'min': return Math.min.apply(null, v);
-    case 'max': return Math.max.apply(null, v);
-    case 'mean': return v.reduce((a, b) => a + b, 0) / v.length;
-    default: return Math.min.apply(null, v);
+/** auto 换侧的门槛：另一侧置信度要高出这么多，且连续这么多帧，才认它 */
+const AUTO_SWITCH_MARGIN = 0.08;
+const AUTO_SWITCH_FRAMES = 8;
+/** 左右两侧读数差超过这么多度，必有一侧是错的 —— 此时不敢信任何一侧 */
+const DISAGREE_DEG = 45;
+
+/**
+ * 把「逐侧读数 + 逐侧置信度」归约成一个输出值。
+ *
+ * 这是本层最容易写错的一处，两个语义必须分清：
+ *  - value 归约：min/max/mean/left/right/auto
+ *  - conf  归约：**输出值所在那一侧的可信度**，不是两侧的最小值
+ *
+ * 早期版本把 conf 一律取 min(_L, _R)，后果很重：侧拍时远侧肢体被躯干挡住，
+ * visibility 掉到 0.3，整条信号就被判为不可信 → 状态机冻结 → 计数恒为 0，
+ * 而界面上的拒绝原因里连一条记录都没有。数据是对的，结论是错的。
+ *
+ * 'auto' 是给「侧拍 + 远侧遮挡」这种场景用的：哪侧看得清用哪侧。
+ * 但它不能逐帧横跳（两侧置信度在阈值附近抖动时会让主信号来回跳），
+ * 所以带粘滞：另一侧要连续 AUTO_SWITCH_FRAMES 帧明显更可信才换。
+ */
+function combine(pairs, side, st, disagreeDeg) {
+  const usable = pairs.filter((p) => p.v !== null && p.v !== undefined && isFinite(p.v));
+  if (!usable.length) return { value: null, conf: 0 };
+
+  if (side === 'auto') {
+    const best = usable.reduce((a, b) => (b.conf > a.conf ? b : a));
+    if (!st) return { value: best.v, conf: best.conf };
+    if (st.autoSide == null) {
+      st.autoSide = best.side;
+      st.autoFrames = 0;
+      return { value: best.v, conf: best.conf };
+    }
+    const cur = usable.filter((p) => p.side === st.autoSide)[0];
+    if (!cur) {
+      // 原来那侧这一帧没有读数（彻底丢了）→ 立刻换，没有粘滞的必要
+      st.autoSide = best.side;
+      st.autoFrames = 0;
+      return { value: best.v, conf: best.conf };
+    }
+    if (best.side === cur.side) {
+      st.autoFrames = 0;
+      return { value: cur.v, conf: cur.conf };
+    }
+    if (best.conf > cur.conf + AUTO_SWITCH_MARGIN) {
+      st.autoFrames = (st.autoFrames || 0) + 1;
+      if (st.autoFrames >= AUTO_SWITCH_FRAMES) {
+        st.autoSide = best.side;
+        st.autoFrames = 0;
+        return { value: best.v, conf: best.conf };
+      }
+    } else {
+      st.autoFrames = 0;
+    }
+    return { value: cur.v, conf: cur.conf };
   }
+
+  if (side === 'left' || side === 'right') {
+    return { value: usable[0].v, conf: usable[0].conf };
+  }
+
+  if (side === 'mean') {
+    const v = usable.reduce((a, b) => a + b.v, 0) / usable.length;
+    // 均值依赖每一侧，所以置信度必须取最保守的那个
+    return { value: v, conf: Math.min.apply(null, usable.map((p) => p.conf)) };
+  }
+
+  // min / max（默认 min）
+  const pick = usable.reduce((a, b) => {
+    if (side === 'max') return b.v > a.v ? b : a;
+    return b.v < a.v ? b : a;
+  });
+  let conf = pick.conf;
+  if (usable.length > 1) {
+    const vals = usable.map((p) => p.v);
+    const spread = Math.max.apply(null, vals) - Math.min.apply(null, vals);
+    const lim = disagreeDeg == null ? DISAGREE_DEG : disagreeDeg;
+    // 分歧过大 = 至少一侧是错的。不知道是哪一侧，就只能都不信。
+    if (spread > lim) conf = Math.min.apply(null, usable.map((p) => p.conf));
+  }
+  return { value: pick.v, conf };
 }
 
 /** 取某点在某坐标系下的位置；缺失或不可信返回 null */
@@ -104,11 +181,10 @@ function centroid(pose, space, idxs) {
 
 export const SIGNAL_TYPES = {
   /** 三点夹角。chain 用「左」侧索引书写，side 决定取哪侧 */
-  jointAngle(def, pose) {
+  jointAngle(def, pose, st) {
     const space = def.space || 'world';
     const sides = sideList(def.side || 'min');
-    const vals = [];
-    let conf = 1;
+    const pairs = [];
     for (const s of sides) {
       const a = s === 'R' ? mirrorIndex(def.chain[0]) : def.chain[0];
       const b = s === 'R' ? mirrorIndex(def.chain[1]) : def.chain[1];
@@ -116,10 +192,9 @@ export const SIGNAL_TYPES = {
       const lm = space === 'world' ? pose.worldLandmarks : pose.landmarks;
       let v = null;
       if (lm && lm[a] && lm[b] && lm[c]) v = jointAngle(lm, a, b, c);
-      vals.push(v);
-      conf = Math.min(conf, minVis(pose, [a, b, c]));
+      pairs.push({ side: s, v, conf: minVis(pose, [a, b, c]) });
     }
-    return { value: reduce(vals, def.side || 'min'), conf };
+    return combine(pairs, def.side || 'min', st, def.disagreeDeg);
   },
 
   /** 某点相对参考点组的归一化高度。图像坐标 y 向下 → 值越大表示越靠下 */
@@ -135,22 +210,24 @@ export const SIGNAL_TYPES = {
   },
 
   /** 两点间距，用某段人体长度归一化。开合跳用它看踝间距 / 肩宽 */
-  spread(def, pose) {
+  spread(def, pose, st) {
     const space = def.space || 'image';
     const sides = sideList(def.side || 'min');
-    const vals = [];
-    let conf = 1;
+    const pairs = [];
     for (const s of sides) {
       const a = s === 'R' ? mirrorIndex(def.a[0]) : def.a[0];
       const b = s === 'R' ? mirrorIndex(def.b[0]) : def.b[0];
       const pa = pointAt(pose, space, a);
       const pb = pointAt(pose, space, b);
-      if (!pa || !pb) { vals.push(null); conf = 0; continue; }
+      if (!pa || !pb) { pairs.push({ side: s, v: null, conf: 0 }); continue; }
       const scale = resolveScale(def.scale, pose, space, [a, b]);
-      vals.push(scale ? distance(pa, pb) / scale : null);
-      conf = Math.min(conf, minVis(pose, [a, b]));
+      pairs.push({
+        side: s,
+        v: scale ? distance(pa, pb) / scale : null,
+        conf: minVis(pose, [a, b]),
+      });
     }
-    return { value: reduce(vals, def.side || 'min'), conf };
+    return combine(pairs, def.side || 'min', st, def.disagreeDeg);
   },
 
   /**
@@ -228,7 +305,18 @@ export class SignalSet {
     this.state = {};
     for (const name of this.names) {
       const def = this.defs[name];
-      const st = { filter: null, last: null, lastAt: 0, vel: null, velAt: 0 };
+      const st = {
+        filter: null,
+        last: null,
+        lastAt: 0,
+        vel: null,
+        velAt: 0,
+        // side:'auto' 的粘滞状态（记录当前选定的侧与挑战计数）
+        autoSide: null,
+        autoFrames: 0,
+        // median 滤波的滑动窗口
+        medBuf: [],
+      };
       if (def.smooth) {
         st.filter = new OneEuroFilter(
           def.smooth.minCutoff == null ? 1.0 : def.smooth.minCutoff,
@@ -258,7 +346,25 @@ export class SignalSet {
         continue;
       }
 
-      let { value, conf } = fn(def, pose);
+      let { value, conf } = fn(def, pose, st);
+
+      /**
+       * 信号级中位数滤波（def.median: 5）。
+       * 目的不是"更平滑"，而是**一帧坏姿态决定不了一次判定** ——
+       * 关键点在遮挡瞬间会给出完全离谱的读数，5 帧中位数能直接吃掉这种尖峰，
+       * 而真实的台阶变化只延迟 (N-1)/2 帧（5 帧 @30fps ≈ 67ms），不影响计数。
+       */
+      if (def.median && def.median >= 3) {
+        const w = def.median % 2 === 0 ? def.median + 1 : def.median;
+        st.medBuf.push(value === null || value === undefined || !isFinite(value) ? null : value);
+        while (st.medBuf.length > w) st.medBuf.shift();
+        const ok = st.medBuf.filter((x) => x !== null);
+        // 窗口刚起步时用已有样本，避免开头几帧被拖成 null
+        if (ok.length >= Math.min(3, w)) {
+          ok.sort((a, b) => a - b);
+          value = ok[Math.floor(ok.length / 2)];
+        }
+      }
 
       // 信号级平滑。注意：关键点已经在引擎层被 PoseFilter 平滑过，
       // 这里是第二道（可选）—— 调试台用它来对比"抖动 vs 延迟"的取舍。

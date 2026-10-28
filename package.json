@@ -22,10 +22,11 @@
     "test:counter": "node tools/test-counter.mjs",
     "test:store": "node tools/test-store.mjs",
     "test:guide": "node tools/test-guide.mjs",
-    "test:node": "node tools/test-fsm.mjs && node tools/test-counter.mjs && node tools/test-store.mjs && node tools/test-guide.mjs",
+    "test:node": "node tools/test-signals.mjs && node tools/test-fsm.mjs && node tools/test-counter.mjs && node tools/test-store.mjs && node tools/test-guide.mjs",
     "test:smoke": "node tools/smoke-test.js --port 4322",
     "test:tune": "node tools/tune-test.js --port 4322",
-    "test:ui": "node tools/counter-test.js --port 4322"
+    "test:ui": "node tools/counter-test.js --port 4322",
+    "test:signals": "node tools/test-signals.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.57.0"

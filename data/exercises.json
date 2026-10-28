@@ -224,8 +224,8 @@
       "unit": "次",
 
       "camera": {
-        "view": "side",
-        "hint": "侧拍最能看清肘角，手机横放、镜头压低到与身体同高。要拍到肩、肘、腕、髋四点。趴姿下人体横向占据画面，注意留出头部与脚的方向余量",
+        "view": "斜侧 45°",
+        "hint": "手机放地上或矮凳上（20~40cm 高）斜着拍就行，不用非跟身体同高。侧前方约 45° 最稳。尽量别正对镜头拍 —— 人躺着是朝远处缩的，深度估不准。要拍到两只手的腕、肘、肩和髋。趴姿下人体横向占画面，注意留出头部与脚的方向余量",
         "minBodyHeightRatio": 0.25
       },
 
@@ -233,8 +233,9 @@
         "elbowAngle": {
           "type": "jointAngle",
           "chain": [11, 13, 15],
-          "side": "min",
+          "side": "auto",
           "space": "world",
+          "median": 5,
           "smooth": { "minCutoff": 1.2, "beta": 0.01 }
         },
         "torsoTilt": {
@@ -253,15 +254,22 @@
         "signal": "elbowAngle",
         "cycle": ["up", "down"],
         "phases": {
-          "up": { "enter": { "gte": 150 }, "label": "撑起" },
-          "down": { "enter": { "lte": 105 }, "label": "下降到最低点" }
+          "up": { "enter": { "gte": 132 }, "label": "撑起" },
+          "down": { "enter": { "lte": 116 }, "label": "下降到最低点" }
         },
         "minRepMs": 200,
         "maxRepMs": 6000,
         "minHoldFrames": 2,
         "lossResetMs": 600,
-        "minConfidence": 0.45,
+        "minConfidence": 0.35,
         "guards": [
+          {
+            "signal": "elbowAngle",
+            "when": "up",
+            "gte": 150,
+            "label": "没有完全撑直（已计入，但幅度偏小）",
+            "severity": "info"
+          },
           {
             "signal": "torsoTilt",
             "when": "down",
@@ -280,10 +288,10 @@
       },
 
       "feedback": {
-        "notEnough": "下降不够：肘角要小于 105° 才算一次完整俯卧撑",
+        "notEnough": "下降不够：肘角要弯到 116° 以内才算一次",
         "tooFast": "动作过快，可能是抖动",
         "tooSlow": "在最低点停留过久，本次未计入",
-        "lost": "目标丢失，请让肩、肘、腕、髋都在画面内"
+        "lost": "目标丢失，请让两只手的肘、腕和肩、髋都在画面内"
       }
     },
 

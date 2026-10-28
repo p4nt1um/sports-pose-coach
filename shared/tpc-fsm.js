@@ -285,7 +285,10 @@ export class PhaseFsm {
       this.armed = true;
       this._repMin = null;
       this._repMax = null;
-      this._repGuardMap = new Map();
+      // 注意：**不能在这里清空 _repGuardMap**。
+      // 规范性标记属于"整个动作"，起始相位（如俯卧撑的「撑起」）上的标记
+      // 才是"这次有没有撑直"的证据。在这里清一次，起点相的标记就永远丢失，
+      // 于是 when:'up' 的 guard 写了也等于没写（只能看到终点相的标记）。
     }
 
     // 某相位停留过久 → 打标记，不阻断计数。
