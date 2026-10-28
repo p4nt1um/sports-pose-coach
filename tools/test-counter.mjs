@@ -339,6 +339,25 @@ console.log('   配置 ' + ALL.version + '，动作 ' + Object.keys(EX).length +
     pack2(flat(0.6, { durationMs: 60000, noise: 0.04 }), flat(0.6, { durationMs: 60000, noise: 0.04 }),
       'kneeHeightL', 'kneeHeightR', { torsoLean: 4 }), 0);
 
+  // 分通道归属：**总数对不代表分对**。
+  // MediaPipe 在双腿交叉时可能把左右关键点互换一个周期 —— 那时总数仍然正确，
+  // 分腿统计却串了，而只断言总数的自检对此完全无感。所以这里必须看每个通道的计数。
+  {
+    const ch = (r) => {
+      const o = {};
+      for (const c of r.snap.channels) o[c.id] = c.count;
+      return o;
+    };
+    const both = ch(run(cfg, dual(10)));
+    check('左右交替 10 轮 → 每腿各 10（分通道，不只看总数）',
+      both.L === 10 && both.R === 10, JSON.stringify(both));
+
+    const oneLeg = ch(run(cfg, pack2(leg(10, 0, 1), flat(0.6, { durationMs: 6600 }),
+      'kneeHeightL', 'kneeHeightR', { torsoLean: 8 })));
+    check('只抬左腿 10 次 → L=10 / R=0（没有串到另一条腿）',
+      oneLeg.L === 10 && oneLeg.R === 0, JSON.stringify(oneLeg));
+  }
+
   // 关键对照：把两腿合成一个「取大值」的单信号，看会漏多少
   {
     const sl = leg(10, 0, 1);

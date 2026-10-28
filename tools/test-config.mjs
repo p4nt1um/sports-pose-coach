@@ -39,7 +39,7 @@ function check(name, ok, detail) {
 /* ---------------- 1. 收集「可调数值参数」 ---------------- */
 
 /** 这些键是结构性的（关键点索引、排序、版本），不是可调阈值，不需要写依据 */
-const STRUCTURAL_KEYS = new Set(['chain', 'point', 'refPoints', 'a', 'b', 'order']);
+const STRUCTURAL_KEYS = new Set(['chain', 'point', 'refPoints', 'a', 'b', 'c', 'order']);
 
 function collectTunables() {
   const out = [];

@@ -166,6 +166,7 @@
     <div class="card">
       <h3>机位要求<span class="tag" id="hintTag"></span></h3>
       <div class="muted" id="cameraHint" style="line-height:1.65"></div>
+      <div id="aspectWarn" class="warnrow" style="display:none;margin-top:8px"></div>
     </div>
 
     <div class="card">
@@ -489,6 +490,40 @@ async function loadExercise(id) {
 
 /* ============================ 引擎 ============================ */
 
+/**
+ * 画面比例检查。
+ *
+ * 为什么必须明说：图像坐标里 **x 按帧宽归一化、y 按帧高归一化**，两者不是同一单位。
+ * 阈值全部按 16:9（1280×720 / 1920×1080）校准；换成 4:3 之后，
+ * 「踝距 / 肩宽」「膝高 / 躯干长」「躯干与垂直轴夹角」这类图像空间信号的比值会整体漂移
+ * （例：真实 45° 的躯干在 16:9 画面里读 60.6°，换个比例又变另一个值）。
+ *
+ * 症状是"某个动作在某台机器上不准"，而且**看起来不像机位问题** —— 极难排查。
+ * 所以宁可在界面上明确报出来，也不假装没这回事。
+ * （彻底修法是把 x 按宽高比各向同性化，但那会同时平移所有已校准的阈值，需要重调一遍；
+ *   在只支持 16:9 摄像头的阶段，报出来比偷偷改更负责。）
+ */
+function aspectWarning(w, h) {
+  if (!w || !h) return '';
+  const ar = w / h;
+  const target = 16 / 9;
+  if (Math.abs(ar - target) / target <= 0.05) return '';
+  const near = (n) => Math.abs(ar - n) <= 0.03;
+  const kind = near(4 / 3) ? '4:3' : near(1) ? '1:1' : ar < target ? '偏窄（竖屏或 4:3）' : '偏宽';
+  return '⚠ 画面比例是 ' + w + '×' + h + '（' + kind + '），不是 16:9。' +
+    '阈值是按 16:9 校准的，踝距 / 膝高 / 躯干角度这类信号会整体偏移，' +
+    '计数可能偏多或偏少。请把摄像头切到 1280×720 或 1920×1080 再上课。';
+}
+
+function checkAspect() {
+  const box = el('aspectWarn');
+  if (!box) return;
+  const msg = aspectWarning(video.videoWidth, video.videoHeight);
+  if (!msg) { box.style.display = 'none'; box.textContent = ''; return; }
+  box.style.display = '';
+  box.innerHTML = esc(msg).replace('1280×720', '<b>1280×720</b>').replace('1920×1080', '<b>1920×1080</b>');
+}
+
 async function start() {
   el('btnStart').disabled = true;
   try {
@@ -496,6 +531,7 @@ async function start() {
     camera = new CameraSource(video);
     await camera.start();
     el('badge').textContent = video.videoWidth + '×' + video.videoHeight;
+    checkAspect();
 
     engine = new PoseEngine({
       vendorBase: VENDOR,
@@ -981,6 +1017,13 @@ window.__counter = {
 
   paramNoteText: () => el('paramNote').innerText.replace(/\s+/g, ' ').trim(),
   cameraHintText: () => el('cameraHint').innerText.replace(/\s+/g, ' ').trim(),
+  /** 画面比例告警：不可见时返回空串。测试用它验证「非 16:9 会报出来」 */
+  aspectWarnText: () => {
+    const b = el('aspectWarn');
+    return b && b.style.display !== 'none' ? b.innerText.replace(/\s+/g, ' ').trim() : '';
+  },
+  /** 纯函数版：给任意分辨率出一句告警，测试不必真开摄像头 */
+  aspectWarning: (w, h) => aspectWarning(w, h),
   bigNumText: () => el('bigNum').innerText.replace(/\s+/g, ' ').trim(),
 };
 </script>

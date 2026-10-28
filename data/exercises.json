@@ -12,6 +12,7 @@
       "jointAngle": "三点夹角（度）。chain 用「左」侧索引书写，side 决定取哪侧或如何归约。space 默认 world（米制，抗透视）",
       "pointHeight": "某点相对参考点组的归一化高度。图像坐标 y 向下 → 值越大表示越靠下。scale 用人体自身长度做归一化以消除距离影响",
       "spread": "两点间距，用人体自身长度归一化。开合跳用踝间距/肩宽",
+      "lineDeviation": "身体直线度（度）：三点 a/b/c 中，b 相对「a→c」直线的偏离角。0=共线（刚性平板），负=b 在直线下方（塌腰/髋下沉），正=上方（拱背）。图像坐标 y 向下；视觉上笔直的平板读数约 −4~−9°（关键点不在关节中心），判定带宽要留这个偏差",
       "torsoLean": "躯干倾角（度）。from:'vertical'（默认）与垂直轴夹角：站立≈0、躺平≈90；from:'horizontal' 与水平面夹角：躺平≈0、直立≈90"
     },
     "sideValues": {
@@ -236,9 +237,11 @@
           "from": "vertical"
         },
         "bodyLine": {
-          "type": "torsoLean",
-          "from": "horizontal",
-          "debugOnly": true
+          "type": "lineDeviation",
+          "a": [11, 12],
+          "b": [23, 24],
+          "c": [27, 28],
+          "space": "image"
         }
       },
 
@@ -270,6 +273,14 @@
             "gte": 55,
             "label": "躯干不够平（是否站着完成的？）",
             "severity": "warn"
+          },
+          {
+            "signal": "bodyLine",
+            "when": "down",
+            "gte": -18,
+            "lte": 12,
+            "label": "身体不成一条直线（塌腰或拱背）",
+            "severity": "info"
           },
           {
             "signal": "elbowAngle",

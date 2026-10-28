@@ -223,6 +223,22 @@ async function stepwise(page, frames) {
   check('机位提示取自配置（不是写死的文案）',
     hint.indexOf('深蹲') === -1 && hint.length > 8, hint.slice(0, 44) + '…');
 
+  // 画面比例：图像坐标 x 按帧宽、y 按帧高归一化，阈值全按 16:9 校准。
+  // 换比例会整体漂移，症状是"某个动作在某台机器上不准"，极难排查 —— 必须报出来。
+  const aspect = await page.evaluate(() => ({
+    wide: window.__counter.aspectWarning(1280, 720),
+    fullHd: window.__counter.aspectWarning(1920, 1080),
+    fourThree: window.__counter.aspectWarning(640, 480),
+    portrait: window.__counter.aspectWarning(720, 1280),
+    unknown: window.__counter.aspectWarning(0, 0),
+  }));
+  check('16:9（720p / 1080p）不报比例告警', aspect.wide === '' && aspect.fullHd === '',
+    '1280×720 → "' + aspect.wide.slice(0, 20) + '"，1920×1080 → "' + aspect.fullHd.slice(0, 20) + '"');
+  check('4:3 与竖屏会明确告警，并带上实际分辨率',
+    aspect.fourThree.indexOf('640×480') >= 0 && aspect.portrait.indexOf('720×1280') >= 0,
+    aspect.fourThree.slice(0, 46) + '…');
+  check('还没拿到分辨率时不误报', aspect.unknown === '', '"' + aspect.unknown + '"');
+
   /* ---------------- B. 计数 ---------------- */
 
   console.log('\n[B] 计数：合成信号驱动页面里的真实链路');

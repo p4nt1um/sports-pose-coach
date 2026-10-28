@@ -27,7 +27,7 @@
  *   置信度也必须跟着"被选中的那一侧"走，不能取两侧最小值，否则一侧遮挡就冻结整条信号。
  */
 
-import { jointAngle, distance, midpoint, torsoInclination, clamp } from './tpc-math.js';
+import { jointAngle, distance, midpoint, torsoInclination, clamp, RAD2DEG } from './tpc-math.js';
 import { OneEuroFilter } from './tpc-filter.js';
 
 /** 左右镜像配对表：用于把「左」索引换算成「右」索引 */
@@ -228,6 +228,54 @@ export const SIGNAL_TYPES = {
       });
     }
     return combine(pairs, def.side || 'min', st, def.disagreeDeg);
+  },
+
+  /**
+   * 身体直线度（度）：b 相对「a → c」这条直线的偏离角。
+   *
+   * 为什么需要它：`torsoLean` 量的是「躯干与竖直方向的夹角」，它能回答
+   * "身体够不够水平"，但**看不到髋部下沉**。平躺撑住时躯干仍然接近水平，
+   * 塌腰只发生在肩—髋—踝这条折线上，只有把三点连起来看才测得出来。
+   *
+   * 符号约定（与 vision-demos 一致）：
+   *   0   = 三点共线（刚性平板）
+   *   负  = b 落在直线**下方**（图像坐标 y 向下）→ 塌腰 / 髋下沉
+   *   正  = b 落在直线上方 → 拱背 / 髋抬高
+   *
+   * ⚠ 关键点不在解剖关节中心，**视觉上笔直的平板读数约 −4°~−9°**，
+   * 不是 0。所以判定带宽要按这个偏差留出余量，别写 ±3°。
+   *
+   * 定义：{ type:'lineDeviation', a:[肩索引…], b:[髋索引…], c:[踝索引…], space:'image' }
+   * a/b/c 各自可以给多个索引，取质心（这样能直接吃「两肩中点」「两髋中点」）。
+   */
+  lineDeviation(def, pose) {
+    const space = def.space || 'image';
+    const aspect = space === 'image' && pose.aspect ? pose.aspect : 1;
+    const pa = centroid(pose, space, def.a);
+    const pb = centroid(pose, space, def.b);
+    const pc = centroid(pose, space, def.c);
+    const idxs = [].concat(def.a, def.b, def.c);
+    if (!pa || !pb || !pc) return { value: null, conf: 0 };
+
+    // 图像坐标 x 按帧宽、y 按帧高归一化 —— 非正方形画面里两者不是同一单位，
+    // 不各向同性化的话"同一个姿态换个画面比例"就会读到不同的角度。
+    const vx = (pc.x - pa.x) * aspect;
+    const vy = pc.y - pa.y;
+    const wx = (pb.x - pa.x) * aspect;
+    const wy = pb.y - pa.y;
+    const vLen2 = vx * vx + vy * vy;
+    const wLen = Math.sqrt(wx * wx + wy * wy);
+    if (vLen2 < 1e-12 || wLen < 1e-9) return { value: null, conf: 0 };
+
+    // b 相对 a→c 的垂直分量
+    const proj = (wx * vx + wy * vy) / vLen2;
+    const px = wx - proj * vx;
+    const py = wy - proj * vy;
+    const mag = Math.sqrt(px * px + py * py);
+    let ang = Math.asin(clamp(mag / wLen, 0, 1)) * RAD2DEG;
+    // 图像坐标 y 向下：py > 0 表示 b 在直线下方 = 塌腰 → 记为负
+    if (py > 0) ang = -ang;
+    return { value: ang, conf: minVis(pose, idxs) };
   },
 
   /**

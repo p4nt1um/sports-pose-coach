@@ -75,7 +75,7 @@ function toImage(p) {
  * @param {number} o.farVis  远侧可见度
  * @param {boolean} o.dropFar 远侧手臂整条缺失（彻底遮挡 / 出画）
  */
-function pushupPose({ nearDeg, farDeg, nearVis = 0.92, farVis = 0.30, dropFar = false }) {
+function pushupPose({ nearDeg, farDeg, nearVis = 0.92, farVis = 0.30, dropFar = false, bodySag = 0.02 }) {
   const lm = [];
   const wl = [];
   for (let i = 0; i < 33; i++) {
@@ -102,10 +102,11 @@ function pushupPose({ nearDeg, farDeg, nearVis = 0.92, farVis = 0.30, dropFar = 
   }
 
   const sy = (near.S.y + far.S.y) / 2;
+  // bodySag：髋相对肩的**额外**下沉量（米）。默认 0.02 是略微不直的常态
   const body = [
-    { x: -0.42, y: sy - 0.02 },
-    { x: -0.84, y: sy - 0.03 },
-    { x: -1.24, y: sy - 0.04 },
+    { x: -0.42, y: sy - bodySag },
+    { x: -0.84, y: sy - bodySag },
+    { x: -1.24, y: sy - bodySag },
   ];
   [23, 25, 27].forEach((idx, k) => {
     put(idx, { ...body[k], z: 0.10 }, 0.9);
@@ -133,7 +134,7 @@ function pushupSequence(o) {
   const {
     top = 160, bottom = 88, cycles = 3, n = 12,
     holdTop = 3, holdBottom = 3,
-    farDeg = 115, farVis = 0.30, nearVis = 0.92, dropFar = false,
+    farDeg = 115, farVis = 0.30, nearVis = 0.92, dropFar = false, bodySag = 0.02,
   } = o;
   const angles = [];
   for (let c = 0; c < cycles; c++) {
@@ -145,7 +146,7 @@ function pushupSequence(o) {
   for (let i = 0; i < holdTop; i++) angles.push(top);
   return angles.map((a, i) => ({
     tMs: (i + 1) * 100,
-    pose: pushupPose({ nearDeg: a, farDeg: farDeg === 'same' ? a : farDeg, farVis, nearVis, dropFar }),
+    pose: pushupPose({ nearDeg: a, farDeg: farDeg === 'same' ? a : farDeg, farVis, nearVis, dropFar, bodySag }),
   }));
 }
 
@@ -388,6 +389,81 @@ console.log('\n[11] legLength：必须按线段长算，不能是 |髋→踝| �
   check('膝弯 90° 时分母仍是大腿+小腿（比值明显小于 1，旧实现会恒等于 1）',
     near(bent90, expect90, 0.02) && bent90 < 0.95,
     '比值 ' + (bent90 == null ? 'null' : bent90.toFixed(3)) + '，理论 ' + expect90.toFixed(3));
+}
+
+console.log('\n[12] lineDeviation：髋偏离「肩—踝」连线的角度（塌腰为负、拱背为正）');
+{
+  /**
+   * 用正方形画面（x、y 映射到同样的米数）造姿态，这样 pose.aspect=1 就是精确的，
+   * 不必在测试里再引入宽高比的因素。
+   */
+  const H = 1.8;
+  const sq = (p) => ({ x: 0.75 + p.x / H, y: 1 - p.y / H, z: 0 });
+  const bodyPose = (sagM) => {
+    const S = { x: 0, y: 0.9 };            // 肩中点（世界坐标，y 向上）
+    const C = { x: -1.2, y: 0.9 };         // 踝中点
+    const B = { x: -0.5, y: 0.9 - sagM };  // 髋中点，sagM > 0 表示比连线低
+    const lm = [];
+    const wl = [];
+    for (let i = 0; i < 33; i++) {
+      lm.push({ x: 0.5, y: 0.5, z: 0, visibility: 0.9 });
+      wl.push({ x: 0, y: 0, z: 0, visibility: 0.9 });
+    }
+    for (const [i, p] of [[11, S], [12, S], [23, B], [24, B], [27, C], [28, C]]) {
+      lm[i] = { ...sq(p), visibility: 0.9 };
+      wl[i] = { ...p, z: 0, visibility: 0.9 };
+    }
+    return { landmarks: lm, worldLandmarks: wl, aspect: 1 };
+  };
+  const defs = { d: { type: 'lineDeviation', a: [11, 12], b: [23, 24], c: [27, 28], space: 'image' } };
+  const devOf = (sagM) => {
+    const set = makeSet(defs);
+    return set.evaluate(bodyPose(sagM), 100).values.d;
+  };
+
+  const flat = devOf(0);
+  const sag = devOf(0.03);      // 髋比连线低 3cm
+  const arch = devOf(-0.03);    // 髋比连线高 3cm
+  const expect = Math.asin(0.03 / 0.5) * (180 / Math.PI);   // ≈3.44°
+  check('三点共线 → 读数 ≈ 0', near(flat, 0, 0.5), '读数 ' + fmt(flat) + '°');
+  check('髋低于连线 3cm → 负值（塌腰）', sag < -1 && near(Math.abs(sag), expect, 1.2),
+    '读数 ' + fmt(sag) + '°，理论 ' + (-expect).toFixed(2) + '°');
+  check('髋高于连线 3cm → 正值（拱背）', arch > 1 && near(arch, expect, 1.2),
+    '读数 ' + fmt(arch) + '°，理论 ' + expect.toFixed(2) + '°');
+
+  // 关键点对象整个缺失 → 必须 null。给 0 会被下游误读成"完美直线"。
+  const gone = bodyPose(0);
+  gone.landmarks[27] = null;
+  gone.landmarks[28] = null;
+  const set2 = makeSet(defs);
+  const missing = set2.evaluate(gone, 100);
+  check('踝点对象缺失 → null（不是 0，否则会被当成"完美直线"）',
+    missing.values.d === null && missing.confidence.d === 0,
+    'value=' + missing.values.d + '，conf=' + missing.confidence.d);
+
+  // 关键点还在但"不可信"（MediaPipe 一定会给 33 个点，只是 visibility 很低）
+  // → 值仍算得出来，但置信度必须是 0，由状态机决定不推进。
+  const invisible = bodyPose(0);
+  invisible.landmarks[27].visibility = 0;
+  invisible.landmarks[28].visibility = 0;
+  const set3 = makeSet(defs);
+  const lowConf = set3.evaluate(invisible, 100);
+  check('踝点不可信 → 置信度 0（值照算，是否采用由状态机按 minConfidence 决定）',
+    lowConf.confidence.d === 0, 'conf=' + lowConf.confidence.d);
+}
+
+console.log('\n[13] 端到端：塌腰的俯卧撑会计数，但打「身体不成一条直线」标记');
+{
+  const good = countReps(EX.pushup, pushupSequence({ cycles: 5, bodySag: 0.02 }));
+  const saggy = countReps(EX.pushup, pushupSequence({ cycles: 5, bodySag: 0.18 }));
+  const flags = (saggy.fsm.lastRep && saggy.fsm.lastRep.flags) || [];
+  const hasSag = flags.some((f) => f.label.indexOf('身体不成一条直线') === 0);
+  const goodFlags = (good.fsm.lastRep && good.fsm.lastRep.flags) || [];
+  const goodSag = goodFlags.some((f) => f.label.indexOf('身体不成一条直线') === 0);
+  check('正常姿态不打「身体不成一条直线」', good.count === 5 && !goodSag,
+    'count=' + good.count + '，标记 ' + JSON.stringify(goodFlags.map((f) => f.label)));
+  check('髋下沉 18cm 仍计数 5 次，但打上标记（计数与分级分离）', saggy.count === 5 && hasSag,
+    'count=' + saggy.count + '，标记 ' + JSON.stringify(flags.map((f) => f.label)));
 }
 
 /* ------------------------------------------------------------------ */
