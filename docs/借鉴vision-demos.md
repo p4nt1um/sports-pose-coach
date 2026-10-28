@@ -333,7 +333,11 @@ INFERENCE_HEIGHT = 1080     # ViTPose caps at a 2048px long edge
    从最快速度点往两边走到速度落到峰值 10% 以下，底部停顿不算进任何一半；
    `rep.transitions` 带 `rawMs` / `activeMs` / 动词，界面报「下放 0.73 秒 / 起身 0.77 秒」，
    随成绩记录与 CSV 一起落地。实测「底部歇 2 秒」→ 起身 raw 3033ms 但 active 仍是 767ms）
-7. `run.json`（每次运行的参数 + 时间）
+7. ✅ `run.json`（每次运行的参数 + 时间）（2026-10-28 落地：`shared/tpc-runlog.js` +
+   计数页「运行记录」卡片。每次「打开摄像头 → 停止」自动留一份，含 `config.patch`
+   与 `config.effective` 两套参数、引擎后端/分辨率/比例、推理耗时 p50/p95、成绩与节奏汇总。
+   **patch 与 effective 都存**：前者答"改了哪几项"，后者答"当时真正在用什么"——
+   默认值会随版本变，只有 patch 无法一比一重跑。本地留最近 30 份，`test-runlog.mjs` 30 项）
 
 **第三批（决定产品上限，需要产品决策）**
 8. 自校准 profile → **儿童体感的准入条件**，不做就上不了幼儿园

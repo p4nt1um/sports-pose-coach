@@ -220,6 +220,18 @@
         <a href="tools/tune.html" style="font-size:13px">去参数调试台调整 →</a>
       </div>
     </div>
+
+    <div class="card">
+      <h3>运行记录<span class="tag">排查用</span></h3>
+      <div class="muted" style="font-size:12px;line-height:1.55;margin-bottom:8px">
+        每次「打开摄像头 → 停止」自动留一份：当时的<b>生效参数</b>、画面分辨率、推理耗时、成绩与节奏。
+        动作数不准时，把它发过来就能一比一复现，不用靠描述猜。
+      </div>
+      <div class="row">
+        <button id="btnRun">导出运行记录 (JSON)</button>
+      </div>
+      <div id="runNote" style="margin-top:8px"></div>
+    </div>
   </aside>
 </main>
 
@@ -233,6 +245,7 @@ import { computeLayout, resizeCanvas, drawPoses } from './shared/tpc-draw.js';
 import { TunedStore } from './shared/tpc-store.js';
 // 语音指导：把判定结果翻成一句人话，并把「播报」与「指导」排进同一条语音通道
 import { guideTextOf, guideForHold, GuideSpeaker, transitionTextOf } from './shared/tpc-guide.js';
+import { createRun, closeRun, runFile, describeRun } from './shared/tpc-runlog.js';
 
 const VENDOR = '/vendor/';
 const REC_KEY = 'spc.records.v1';
@@ -280,6 +293,140 @@ function saveRecords(list) {
   catch (e) { /* 隐私模式：静默放弃，不打断上课 */ }
 }
 let records = loadRecords();
+
+/* ==================== 运行记录（run.json）：出问题时唯一的复现凭据 ==================== */
+/*
+ * 为什么上课页也要留这个：老师反馈「数不准」，能给的只有一句话。
+ * 而原因可能来自参数（调试台改过）、机位（分辨率/比例）、硬件（CPU 还是 GPU、
+ * 实际帧率），也可能只是这次把动作切错了。没有一份快照，排查全靠猜。
+ *
+ * 与「成绩记录」的区别（两者都要，不是重复）：
+ *   · 成绩记录 = 老师要看的**结果**（做了几次/多少秒），一行一次课。
+ *   · 运行记录 = 开发要看的**过程**（当时的参数与环境），排查时才导出。
+ *     所以它不上表格、不做界面编辑，只在后台默默攒着。
+ */
+
+const RUN_KEY = 'spc.runs.v1';
+const RUN_MAX = 30;        // 只留最近 30 次，够回溯一节课，也不占存储
+const RHYTHM_KEEP = 60;    // 单次运行最多留多少组节奏样本
+const INFER_KEEP = 900;    // 推理耗时样本上限（30 秒 @30fps）
+
+function loadRuns() {
+  try {
+    const o = JSON.parse(localStorage.getItem(RUN_KEY) || '[]');
+    return Array.isArray(o) ? o : [];
+  } catch (e) { return []; }
+}
+function saveRuns(list) {
+  try { localStorage.setItem(RUN_KEY, JSON.stringify(list.slice(-RUN_MAX))); }
+  catch (e) { /* 隐私模式：静默放弃，不打断上课 */ }
+}
+
+let runs = loadRuns();
+let currentRun = null;   // 正在进行的这一次（结束后才落盘）
+let runRhythm = [];      // 本次运行里每次动作的 transitions
+let inferSamples = [];   // 推理耗时（用来算 p50/p95）
+
+function appVersion() {
+  return (CFG_ALL.meta && CFG_ALL.meta.version) || null;
+}
+
+function readEnv() {
+  return {
+    ua: navigator.userAgent,
+    dpr: window.devicePixelRatio || 1,
+    screen: (screen.width || 0) + 'x' + (screen.height || 0),
+    hwConcurrency: navigator.hardwareConcurrency || null,
+    tzOffsetMin: new Date().getTimezoneOffset(),
+    lang: navigator.language || null,
+  };
+}
+
+/** 分位数只能用排序后的下标取，别调库 —— 样本最多 900 个，排序足够快 */
+function inferStats() {
+  if (!inferSamples.length) return null;
+  const sorted = inferSamples.slice().sort((a, b) => a - b);
+  const pick = (p) => {
+    const i = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+    return Math.round(sorted[i] * 10) / 10;
+  };
+  return {
+    last: Math.round(inferSamples[inferSamples.length - 1] * 10) / 10,
+    p50: pick(0.5),
+    p95: pick(0.95),
+    samples: inferSamples.length,
+  };
+}
+
+function beginRun() {
+  if (!EX) return;
+  runRhythm = [];
+  inferSamples = [];
+  const rec = store.load(EX.id);
+  currentRun = createRun({
+    at: Date.now(),
+    exercise: { id: EX.id, name: EX.name, mode: modeOf(EX) },
+    cfg: EX,
+    appliedCustom,
+    // 只取 patch：这是"老师改过哪几项"。全量在 createRun 里另存为 effective
+    patch: rec && rec.patch ? rec.patch : null,
+    engine: {
+      model: 'full',
+      delegate: engine ? engine.delegateInUse : null,
+      videoW: video.videoWidth || null,
+      videoH: video.videoHeight || null,
+    },
+    env: readEnv(),
+  });
+}
+
+/**
+ * 结束并落盘。**必须传 reason**：事后区分「老师自己停的」与「切了动作」
+ * 才知道这次成绩为什么只有半截。
+ */
+function endRun(reason) {
+  if (!currentRun) return null;
+  const done = closeRun(currentRun, {
+    at: Date.now(),
+    snapshot: tracker ? tracker.snapshot() : {},
+    reason: reason || 'stopped',
+    reps: runRhythm,
+    inferMs: inferStats(),
+  });
+  currentRun = null;
+  runRhythm = [];
+  inferSamples = [];
+  if (done) {
+    runs.push(done);
+    saveRuns(runs);
+    renderRunNote();
+  }
+  return done;
+}
+
+function renderRunNote() {
+  const host = el('runNote');
+  if (!host) return;
+  if (!runs.length) {
+    host.innerHTML = '<div class="muted" style="font-size:12px">还没有运行记录。开一次摄像头就会自动留一份。</div>';
+    return;
+  }
+  const last = runs[runs.length - 1];
+  host.innerHTML = '<div class="muted" style="font-size:12px;line-height:1.6">最近一次：' +
+    esc(describeRun(last) || '（没有成绩）') + '<br>共 ' + runs.length + ' 份 · 只存在本机</div>';
+}
+
+function exportRuns() {
+  if (!runs.length) { flash('还没有运行记录，先开一次摄像头'); return; }
+  const f = runFile(runs, { appVersion: appVersion(), exportedAt: Date.now() });
+  const blob = new Blob([JSON.stringify(f, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '运行记录_' + stamp().replace(/[-: ]/g, '') + '.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  flash('已导出 ' + runs.length + ' 份运行记录');
+}
 
 function stamp() {
   const d = new Date();
@@ -456,7 +603,7 @@ function buildPicker() {
 }
 
 async function loadExercise(id) {
-  stopAll();
+  stopAll('switched');   // 切动作 = 上一次运行到此为止（成绩只到切换前）
   el('selExercise').value = id;
   FILE_DEFAULTS = deep(CFG_ALL.exercises[id]);
   EX = deep(CFG_ALL.exercises[id]);
@@ -554,6 +701,8 @@ async function start() {
     running = true;
     el('btnStop').disabled = false;
     el('badge').textContent = (engine.delegateInUse === 'GPU' ? 'GPU' : 'CPU') + ' · 运行中';
+    // 引擎起来了才算一次运行的开始 —— 在此之前失败（没摄像头/没模型）不该留半份记录
+    beginRun();
     startUiLoop();
   } catch (e) {
     el('badge').textContent = '启动失败';
@@ -563,7 +712,11 @@ async function start() {
   }
 }
 
-function stopAll() {
+/**
+ * 停止一切并结账。
+ * @param {string} reason 'stopped' 老师按了停止 / 'switched' 换了动作 / 'reloaded' 关页面
+ */
+function stopAll(reason) {
   if (engine) { try { engine.close(); } catch (e) { /* 忽略 */ } engine = null; }
   if (camera) { try { camera.stop(); } catch (e) { /* 忽略 */ } camera = null; }
   running = false;
@@ -571,6 +724,8 @@ function stopAll() {
   el('btnStop').disabled = true;
   // 计时动作：停止时把进行中的那一段结账，否则它永远不会进 totalMs
   if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
+  // 运行记录同理：不结账就等于这次课白跑，事后无从复现
+  endRun(reason || 'stopped');
   renderAll();
 }
 
@@ -618,6 +773,10 @@ function stepFrame(values, confidence, tMs) {
     // count 只在计数成功时才涨，而被拒绝（太快 / 停住 / 半程）的那一次
     // 恰恰不涨 —— 那正是学生最需要听到原因的时候。用 count 判断会把这一类全漏掉。
     if (after.lastRep !== before.lastRep) {
+      // 节奏样本先攒着 —— 结束运行时要汇总成「这个动作平均下放多久」
+      if (after.lastRep && after.lastRep.transitions && runRhythm.length < RHYTHM_KEEP) {
+        runRhythm.push(after.lastRep.transitions);
+      }
       renderFeedback(after);
       const g = guideTextOf(after.lastRep);          // 先算出「该说什么」，与开关无关
       // 判据用「该不该说」而不是「有没有说出去」：否则指导处在冷却期时，
@@ -652,6 +811,12 @@ function onFrame(res) {
   const pose = res.poses && res.poses[0] ? res.poses[0] : null;
   poseCount = res.poses ? res.poses.length : 0;
   lastInferMs = res.inferenceMs;
+  // 攒推理耗时给运行记录算 p50/p95。用 p95 而不是均值：老师体感到的"卡"
+  // 就是那 5% 的慢帧，均值会把它抹平。
+  if (typeof res.inferenceMs === 'number' && isFinite(res.inferenceMs) &&
+      inferSamples.length < INFER_KEEP) {
+    inferSamples.push(res.inferenceMs);
+  }
 
   let values = {};
   let confidence = {};
@@ -842,7 +1007,11 @@ function drawOverlay(pose) {
 /* ============================ 绑定 ============================ */
 
 el('btnStart').addEventListener('click', start);
-el('btnStop').addEventListener('click', () => { stopAll(); el('badge').textContent = '已停止'; });
+el('btnStop').addEventListener('click', () => { stopAll('stopped'); el('badge').textContent = '已停止'; });
+el('btnRun').addEventListener('click', exportRuns);
+// 关页面/刷新时尽力结账。beforeunload 里只做同步操作，localStorage 写入是同步的，
+// 所以这一句通常能落地；但它不保证（浏览器杀进程时不会触发），所以不能当作唯一出口。
+window.addEventListener('beforeunload', () => { endRun('reloaded'); });
 el('btnZero').addEventListener('click', () => {
   if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
   tracker = createTracker(EX);
@@ -889,6 +1058,7 @@ store = new TunedStore();
   buildPicker();
   renderRecords();
   renderGuideLog();
+  renderRunNote();
   await loadExercise(exerciseList()[0].id);
   window.__counter.booted = true;
 })().catch((e) => {
@@ -936,6 +1106,13 @@ window.__counter = {
   get cfg() { return EX; },
   get appliedCustom() { return appliedCustom; },
   get records() { return records.slice(); },
+  /** 运行记录（每次「开摄像头 → 停止」一份，排查用；不在界面上编辑） */
+  get runs() { return runs.slice(); },
+  get currentRun() { return currentRun; },
+  get inferMs() { return inferStats(); },
+  /** 手动结账当前这次运行（自检用；正常路径是停止按钮/切动作/关页面） */
+  endRunNow: (reason) => endRun(reason || 'stopped'),
+  clearRuns: () => { runs = []; saveRuns(runs); renderRunNote(); return runs.length; },
   /** 最近一次动作的向心/离心拆解（自检断言用；纯数据，不含括号里的教学措辞） */
   get lastTransitions() {
     if (!tracker) return null;

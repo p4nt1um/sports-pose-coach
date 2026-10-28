@@ -352,6 +352,39 @@ npm install                  # ③ 仅当要跑浏览器自检时需要（装 pl
 > 存档里一项都没有；刷新后全没了，且不报错」。这类故障是**静默**的，
 > 现在 node 与浏览器两侧各留了防复发断言。
 
+### 出问题时怎么排查：运行记录（run.json）
+
+「数不准」是最难远程处理的一类反馈：老师能给的只有一句话，而原因可能在参数、
+在机位、在硬件，也可能只是这次把动作切错了。所以这一页会**自动**给每次运行留一份快照 ——
+点「打开摄像头」到「停止」算一次，老师不用做任何操作。
+
+右下「运行记录」卡里点**导出运行记录 (JSON)**，得到：
+
+```
+{ schema: "spc-run/1", app: {version}, exportedAt, count, runs: [ … ] }
+```
+
+每份 run 里有四段：
+
+| 段 | 内容 | 为什么要有 |
+|---|---|---|
+| `config.patch` | 老师改过的那几项 | 回答「为什么和默认不一样」 |
+| `config.effective` | 合并后**当时真正在用**的 fsm / signals / camera 全量 | 回答「当时到底是什么」 |
+| `engine` | 后端（GPU/CPU）、分辨率、画面比例、推理耗时 p50/**p95** | 「卡」是那 5% 的慢帧，均值会抹平它 |
+| `result` / `rhythm` | 次数、拒绝明细、分通道计数、各半程平均时长 | 没有这些，参数对不对无从判断 |
+
+三个刻意的取舍：
+
+- **patch 与 effective 都存**。patch 可读性好，但默认值会随版本变，旧 patch 套新版本会失真；
+  effective 才能一比一重跑。两者回答的是不同问题，不是冗余。
+- **不存逐帧数据**。帧级轨迹是 MB 级，`localStorage` 存不住，也没必要 ——
+  拒绝计数 + 节奏统计已经足够区分「是阈值不对还是机位不对」。
+  真要逐帧，用调试台的实时曲线。
+- **本地只留最近 30 份**（键 `spc.runs.v1`），并支持一键清空。这是排查数据，不是成绩档案。
+
+> 同一个页面里两种"记录"，别混：**成绩记录**是老师要看的**结果**（一行一次课，可导 CSV，带节奏）；
+> **运行记录**是开发要看的**过程**（参数 + 环境，排查时才导出）。前者上表格，后者不进界面。
+
 ---
 
 ## M1 页面能做什么
@@ -400,11 +433,12 @@ tools/
   smoke-test.js       M1 自检：引擎链路 14 项
   tune.html           参数调试台
   tune-test.js        调试台自检 75 项（模拟信号 + 摄像头 + 存档 + 多动作 + 首页）
-  counter-test.js     计数页自检 100 项（七动作 + 计时 + 存档复用 + 记录导出 + 离线护栏 + 语音 + 节奏）
+  counter-test.js     计数页自检 110 项（七动作 + 计时 + 存档复用 + 记录导出 + 离线护栏 + 语音 + 节奏 + 运行记录）
   test-fsm.mjs        计数状态机回归（node 直跑，41 项）
   test-counter.mjs    七个动作的计数/计时回归（node 直跑，56 项）
   test-store.mjs      参数存档回归（node 直跑，54 项）
   test-guide.mjs      语音指导 + 节奏措辞回归（node 直跑，44 项）
+  test-runlog.mjs     运行记录（run.json）回归（node 直跑，30 项）
   test-signals.mjs    信号层回归：关键点 → 一维信号（node 直跑，33 项）
   test-config.mjs     配置健全性 + 参数依据表一致性（node 直跑，10 项）
   perf-matrix.js      推理耗时矩阵：模型 × 后端（「运行环境要求」那张表就是它测的）
@@ -423,7 +457,8 @@ shared/
   tpc-fsm.js          通用计数状态机
   tpc-hold.js         保持类计时器（马步 / 靠墙静蹲）
   tpc-counter.js      计数/计时统一门面 + 多通道（左右腿各跑一个状态机）
-  tpc-guide.js        语音指导：判定→一句人话 + 串行播报队列（去重 / 抢话）
+  tpc-guide.js        语音指导：判定→一句人话 + 串行播报队列（去重 / 抢话）+ 节奏措辞
+  tpc-runlog.js       运行记录：每次「开摄像头 → 停止」的参数/环境/成绩快照（排查与复现用）
   tpc-store.js        参数存档：存差异 + 冲突检测 + 存储降级
   package.json        仅用于让 node 把本目录当 ES Module（浏览器忽略）
 
@@ -512,6 +547,10 @@ node tools/test-store.mjs
 # 语音指导回归（不需要浏览器：文案翻译 / 挑主要原因 / 去重 / 抢话）
 node tools/test-guide.mjs
 
+# 运行记录回归（不需要浏览器：节奏汇总口径 / 不污染历史 / 空值安全）
+node tools/test-runlog.mjs
+node tools/test-runlog.mjs --verbose   # 顺便打印一份样例 run.json
+
 # 配置回归（不需要摄像头：依据表覆盖、现值一致、无死信号、保持类量级自洽）
 node tools/test-config.mjs
 node tools/test-config.mjs --verbose   # 顺便打印全部可调参数清单
@@ -528,7 +567,7 @@ node tools/smoke-test.js --port 4322 --shot shot.png
 node tools/tune-test.js --port 4322
 node tools/tune-test.js --port 4400 --shot tune.png
 
-# 浏览器自检：计数页 100 项（七动作 + 计时 + 存档复用 + 记录导出 + 离线护栏 + 语音指导 + 节奏）
+# 浏览器自检：计数页 110 项（七动作 + 计时 + 存档复用 + 记录导出 + 离线护栏 + 语音指导 + 节奏 + 运行记录）
 node tools/counter-test.js --port 4322
 node tools/counter-test.js --port 4400 --shot counter.png
 

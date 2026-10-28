@@ -648,6 +648,55 @@ async function stepwise(page, frames) {
   await page.waitForTimeout(300);
   check('停止后状态回到未运行', (await page.evaluate(() => window.__counter.running)) === false, '');
 
+  /* ---- F1b. 运行记录：一次真实的「开 → 停」应该自动落一份快照 ---- */
+  console.log('\n[F1b] 运行记录（run.json）：老师不用做任何操作就该有一份');
+  const runLog = await page.evaluate(() => {
+    const r = window.__counter.runs;
+    return { n: r.length, last: r.length ? r[r.length - 1] : null };
+  });
+  check('停止后自动留了一份运行记录', runLog.n === 1, 'runs=' + runLog.n);
+
+  const rl = runLog.last || {};
+  check('带结束原因与真实时长',
+    rl.endReason === 'stopped' && rl.durationMs > 1000,
+    'reason=' + rl.endReason + '，durationMs=' + rl.durationMs);
+  check('★ 存了当时生效的参数（复现全靠这一段，不是只存 diff）',
+    !!(rl.config && rl.config.effective && rl.config.effective.fsm) &&
+    rl.config.effective.fsm.signal === 'kneeAngle' &&
+    rl.config.effective.fsm.cycle.length === 2,
+    'effective.fsm.signal=' + (rl.config && rl.config.effective.fsm ? rl.config.effective.fsm.signal : 'null') +
+    '，appliedCustom=' + (rl.config ? rl.config.appliedCustom : '-'));
+  check('存了引擎后端、分辨率与画面比例',
+    rl.engine && (rl.engine.delegate === 'GPU' || rl.engine.delegate === 'CPU') &&
+    rl.engine.videoW > 0 && rl.engine.videoH > 0 && rl.engine.aspect > 0,
+    (rl.engine || {}).delegate + '，' + (rl.engine || {}).videoW + '×' + (rl.engine || {}).videoH +
+    '，aspect=' + (rl.engine || {}).aspect);
+  check('存了推理耗时 p95（老师体感的卡顿是那 5% 的慢帧，均值会抹平）',
+    !!(rl.engine && rl.engine.inferMs && rl.engine.inferMs.p95 > 0),
+    JSON.stringify(rl.engine && rl.engine.inferMs));
+  check('存了环境信息（UA / DPR / 屏幕）',
+    !!(rl.env && rl.env.ua && rl.env.dpr >= 1 && rl.env.screen),
+    'dpr=' + (rl.env || {}).dpr + '，screen=' + (rl.env || {}).screen);
+  check('★ 合成画面里没人 → 记录里也是 0 次（快照不虚报成绩）',
+    !!(rl.result && rl.result.count === 0 && rl.result.mode === 'reps'),
+    'count=' + (rl.result || {}).count);
+
+  const runNoteText = (await page.textContent('#runNote')).replace(/\s+/g, ' ').trim();
+  check('界面给出「最近一次」摘要（不打开 JSON 也知道导出了什么）',
+    /最近一次/.test(runNoteText), '"' + runNoteText.slice(0, 50) + '"');
+
+  // stopAll 会在多条路径被调用（停止 / 切动作 / 重开）。重复结账不能凭空多出空记录。
+  const afterDup = await page.evaluate(() => {
+    window.__counter.endRunNow('switched');
+    window.__counter.endRunNow('switched');
+    return window.__counter.runs.length;
+  });
+  check('重复结账不会凭空多出记录（stopAll 会被多条路径调用）',
+    afterDup === 1, 'runs=' + afterDup);
+
+  const afterClearRuns = await page.evaluate(() => window.__counter.clearRuns());
+  check('运行记录可清空（老师不必为排查数据留着占地方）', afterClearRuns === 0, 'runs=' + afterClearRuns);
+
   if (SHOT) {
     await page.evaluate(() => window.__counter.setExercise('high_knee'));
     const s = await signalsOf(page);
