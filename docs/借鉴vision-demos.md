@@ -310,9 +310,12 @@ INFERENCE_HEIGHT = 1080     # ViTPose caps at a 2048px long edge
 **第一批（都在现有架构内，不动判定语义，1–2 天）**
 1. ✅ `side: "auto"`（按置信度选近侧）→ 侧拍三个动作立刻更稳（2026-10-28 落地，俯卧撑已切到 auto；`test-signals.mjs` 覆盖）
 2. ✅ 读数取 5 帧中位数 → 防单帧污染（信号层 `median: 5`，2026-10-28 落地）
-3. `config` / `evaluate.json` 逐项补"为什么是这个值"的注释
-4. 删掉或修好死配置（**仍未处理**）：`squat.hipDrop` 从未被任何代码读取；
-   `camera.minBodyHeightRatio`（7 处）同样只写在 JSON 里、无人消费 —— 排查缺陷时别去追它
+3. ✅ 每个参数补"为什么是这个值"→ `docs/参数依据.md`（81 条），
+   并由 `tools/test-config.mjs` 校验「覆盖完整 + 现值与配置一致 + 无残留行」，
+   改了参数忘改文档会直接报红（2026-10-28 落地）
+4. ✅ 死配置已清（2026-10-28）：`squat.hipDrop` 与 7 处 `camera.minBodyHeightRatio` 全部删除；
+   `legLength` 顺手修成「大腿线段 + 小腿线段」（原来 |髋→踝| 会随屈膝缩短 8~11%）。
+   现在 `test-config.mjs` 会拦住新的死信号：**每个信号要么被判定逻辑引用，要么显式 `debugOnly: true`**。
 
 **第二批（新增能力，3–5 天）**
 5. `lineDeviation` 信号类型 → 俯卧撑"髋下沉"能看出来

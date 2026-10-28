@@ -261,7 +261,29 @@ function resolveScale(scale, pose, space, fallbackIdxs) {
   };
   let v = null;
   switch (scale) {
-    case 'legLength': v = pick(23, 27); break;
+    case 'legLength': {
+      /**
+       * 腿长 = 大腿线段长 + 小腿线段长（两侧各取中位再相加），
+       * **不能写成 |髋→踝| 的直线距离**。
+       *
+       * 理由：膝盖一弯，髋到踝的直线就缩短 —— 实测深蹲到底比站立时短 8~11%，
+       * 而这个缩短量恰好反映了"蹲了多深"。于是任何用它做归一化的比值
+       * （如 hipDrop = 髋高/腿长）会自己放大自己：蹲得越深，分母越小，值越夸张。
+       * 更隐蔽的是它**看起来完全正常**（腿上量出来的当然是腿长），只有在对真人调参时
+       * 才会发现"同样的动作，深蹲时读数比浅蹲大一截"。
+       *
+       * 大腿 = 髋→膝，小腿 = 膝→踝，都是刚体线段，长度不随姿态变化。
+       */
+      const median = (arr) => {
+        const a = arr.filter((x) => x !== null && isFinite(x) && x > 1e-6).sort((x, y) => x - y);
+        if (!a.length) return null;
+        return a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
+      };
+      const thigh = median([pick(23, 25), pick(24, 26)]);
+      const shank = median([pick(25, 27), pick(26, 28)]);
+      v = thigh !== null && shank !== null ? thigh + shank : null;
+      break;
+    }
     case 'torsoLength': {
       const s = centroid(pose, space, [11, 12]);
       const h = centroid(pose, space, [23, 24]);

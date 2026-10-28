@@ -348,6 +348,48 @@ console.log('\n[10] 回归：其它动作的 side 归约没被改坏');
     '(肩-髋)/躯干长 = ' + (out3.values.p === null ? 'null' : out3.values.p.toFixed(2)));
 }
 
+console.log('\n[11] legLength：必须按线段长算，不能是 |髋→踝| 的直线距离');
+{
+  /**
+   * 造一条腿：大腿 0.45m、小腿 0.42m，膝弯 bendDeg 度。
+   * 髋固定在世界坐标 (0, 0.9)，膝在正下方，小腿从膝往斜下。
+   */
+  const THIGH = 0.45;
+  const SHANK = 0.42;
+  const legPose = (bendDeg) => {
+    const H = { x: 0, y: 0.9, z: 0 };
+    const K = { x: 0, y: H.y - THIGH, z: 0 };
+    const t = (bendDeg * Math.PI) / 180;
+    // 膝弯时小腿往 −x 方向折叠
+    const A = { x: K.x - SHANK * Math.sin(t), y: K.y - SHANK * Math.cos(t), z: 0 };
+    const lm = [];
+    const wl = [];
+    for (let i = 0; i < 33; i++) {
+      lm.push({ x: 0.5, y: 0.5, z: 0, visibility: 0.9 });
+      wl.push({ x: 0, y: 0, z: 0, visibility: 0.9 });
+    }
+    for (const [idx, p] of [[23, H], [25, K], [27, A], [24, H], [26, K], [28, A]]) {
+      lm[idx] = { ...toImage(p), visibility: 0.9 };
+      wl[idx] = { ...p, visibility: 0.9 };
+    }
+    return { landmarks: lm, worldLandmarks: wl };
+  };
+
+  // 比值 = |髋−踝| / legLength。旧实现分母就是分子，恒为 1；修好后应随屈膝下降。
+  const defs = { r: { type: 'spread', a: [23], b: [27], side: 'left', scale: 'legLength', space: 'world' } };
+  const ratioOf = (bendDeg) => {
+    const set = makeSet(defs);
+    return set.evaluate(legPose(bendDeg), 100).values.r;
+  };
+  const straight = ratioOf(0);
+  const bent90 = ratioOf(90);
+  check('直腿时 |髋−踝| / legLength ≈ 1', near(straight, 1, 0.02), '比值 ' + (straight == null ? 'null' : straight.toFixed(3)));
+  const expect90 = Math.hypot(THIGH - SHANK * Math.cos(Math.PI / 2), SHANK) / (THIGH + SHANK);
+  check('膝弯 90° 时分母仍是大腿+小腿（比值明显小于 1，旧实现会恒等于 1）',
+    near(bent90, expect90, 0.02) && bent90 < 0.95,
+    '比值 ' + (bent90 == null ? 'null' : bent90.toFixed(3)) + '，理论 ' + expect90.toFixed(3));
+}
+
 /* ------------------------------------------------------------------ */
 
 const failed = results.filter((r) => !r.ok);

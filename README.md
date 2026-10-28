@@ -365,6 +365,7 @@ package.json          仅声明 devDependencies 与自检快捷脚本（运行�
 docs/
   screenshots/        README 用的三张截图（由自检脚本 --shot 生成）
   设备清单.md         给体育组的一页纸：采购确认 + 开课前自检 + 机位 + 故障对照
+  参数依据.md         每个可调阈值「为什么是这个值」+ 改动会付出什么代价（由 test-config 校验，不会烂）
   一体机方案.md       要做「带屏体育课一体机」时的整机选型 / BOM / kiosk 部署 / 收货验收
   借鉴vision-demos.md 同类开源项目 vision-demos 的可迁移技术与功能（含本项目 3 处已查实的问题）
 
@@ -381,7 +382,8 @@ tools/
   test-counter.mjs    七个动作的计数/计时回归（node 直跑，54 项）
   test-store.mjs      参数存档回归（node 直跑，54 项）
   test-guide.mjs      语音指导回归（node 直跑，38 项）
-  test-signals.mjs    信号层回归：关键点 → 一维信号（node 直跑，24 项）
+  test-signals.mjs    信号层回归：关键点 → 一维信号（node 直跑，26 项）
+  test-config.mjs     配置健全性 + 参数依据表一致性（node 直跑，10 项）
   perf-matrix.js      推理耗时矩阵：模型 × 后端（「运行环境要求」那张表就是它测的）
   write-bat.js        生成 启动.bat（CRLF 由代码构造，避免转义层数出错）
   inspect-bat.js      诊断/修复 .bat 换行字节异常（含 --selftest）
@@ -487,6 +489,10 @@ node tools/test-store.mjs
 # 语音指导回归（不需要浏览器：文案翻译 / 挑主要原因 / 去重 / 抢话）
 node tools/test-guide.mjs
 
+# 配置回归（不需要摄像头：依据表覆盖、现值一致、无死信号、保持类量级自洽）
+node tools/test-config.mjs
+node tools/test-config.mjs --verbose   # 顺便打印全部可调参数清单
+
 # 信号层回归（不需要摄像头：把合成关键点喂进去，验证遮挡/低置信/单帧尖峰）
 node tools/test-signals.mjs
 node tools/test-signals.mjs --verbose
@@ -520,14 +526,15 @@ node tools/test-bat.js                   # 真实跑一次 bat，验证服务被
 ```bash
 npm run serve          # = node tools/serve.js --port 4322
 npm run vendor         # = node tools/fetch-vendor.js
-npm run test:node      # 五个 node 直跑回归（信号层 / 状态机 / 计数 / 存档 / 语音），无需浏览器、无需 npm install
+npm run test:node      # 六个 node 直跑回归（配置 / 信号层 / 状态机 / 计数 / 存档 / 语音），无需浏览器、无需 npm install
+npm run test:config    # 配置 + 参数依据表 10 项
 npm run test:signals   # 信号层回归 24 项
 npm run test:smoke     # 引擎链路 14 项（需先起服务）
 npm run test:tune      # 调试台 75 项（需先起服务）
 npm run test:ui        # 计数页 91 项（需先起服务）
 ```
 
-**改动核心层或状态机后，请至少跑 `test-signals.mjs` + `test-fsm.mjs` + `test-counter.mjs` + `smoke-test.js`。**
+**改动核心层或状态机后，请至少跑 `test-config.mjs` + `test-signals.mjs` + `test-fsm.mjs` + `test-counter.mjs` + `smoke-test.js`。**
 `test-counter.mjs` 是直接喂数值的，它验的是状态机；`test-signals.mjs` 是从关键点出发的，
 验的是"数值本身对不对"。俯卧撑那类"怎么调都数不出来"的问题，只跑前者是看不出来的。
 改参数只改 `data/exercises.json`，改完务必用 `tune.html` 对着真人或视频验证，再跑一遍回归。

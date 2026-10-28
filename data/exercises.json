@@ -1,6 +1,6 @@
 {
-  "version": "0.3.1",
-  "updatedAt": "2026-09-22",
+  "version": "0.4.0",
+  "updatedAt": "2026-10-28",
   "note": "所有阈值集中在此文件。老师改这里就能改计数标准，不需要碰代码。改完用 tools/tune.html 对着真人验证，再跑 node tools/test-counter.mjs 跑回归。阈值初值是标准动作的合理起点，**必须用调试台对真人校准**。",
 
   "meta": {
@@ -22,7 +22,7 @@
       "mean": "两侧平均"
     },
     "scaleKeys": {
-      "legLength": "髋→踝。注意：抬腿类动作腿会折叠，用它会自己放大自己，高抬腿改用 torsoLength",
+      "legLength": "大腿线段长 + 小腿线段长（分别取两侧中位再相加）。**不要写成 |髋→踝| 的直线距离** —— 膝盖一弯它就缩短 8~11%，于是分母随动作变、比值被放大。抬腿类动作同样会因为折叠而失真，高抬腿仍应用 torsoLength",
       "torsoLength": "肩中点→髋中点。躯干姿态变化时最稳定，抬腿/挥手都不影响",
       "shoulderWidth": "肩宽。开合跳的踝距用它归一化",
       "hipWidth": "髋宽",
@@ -70,8 +70,7 @@
 
       "camera": {
         "view": "front-or-side",
-        "hint": "正对或侧对镜头，全身入镜。膝盖、踝、髋三点都要可见 —— 蹲到大腿与地面平行最准",
-        "minBodyHeightRatio": 0.5
+        "hint": "正对或侧对镜头，全身入镜。膝盖、踝、髋三点都要可见 —— 蹲到大腿与地面平行最准"
       },
 
       "signals": {
@@ -86,20 +85,15 @@
           "type": "jointAngle",
           "chain": [23, 25, 27],
           "side": "left",
-          "space": "world"
+          "space": "world",
+          "debugOnly": true
         },
         "kneeAngleR": {
           "type": "jointAngle",
           "chain": [24, 26, 28],
           "side": "right",
-          "space": "world"
-        },
-        "hipDrop": {
-          "type": "pointHeight",
-          "point": 23,
-          "refPoints": [27, 28],
-          "scale": "legLength",
-          "space": "image"
+          "space": "world",
+          "debugOnly": true
         },
         "torsoLean": { "type": "torsoLean" }
       },
@@ -154,8 +148,7 @@
 
       "camera": {
         "view": "front",
-        "hint": "正对镜头，全身入镜（头顶到脚要留余量，跳起时别出画）。正对很重要：踝距要用肩宽归一化，侧对时肩宽被透视压缩会让比值失真",
-        "minBodyHeightRatio": 0.55
+        "hint": "正对镜头，全身入镜（头顶到脚要留余量，跳起时别出画）。正对很重要：踝距要用肩宽归一化，侧对时肩宽被透视压缩会让比值失真"
       },
 
       "signals": {
@@ -179,7 +172,8 @@
           "type": "jointAngle",
           "chain": [23, 25, 27],
           "side": "min",
-          "space": "world"
+          "space": "world",
+          "debugOnly": true
         }
       },
 
@@ -225,8 +219,7 @@
 
       "camera": {
         "view": "斜侧 45°",
-        "hint": "手机放地上或矮凳上（20~40cm 高）斜着拍就行，不用非跟身体同高。侧前方约 45° 最稳。尽量别正对镜头拍 —— 人躺着是朝远处缩的，深度估不准。要拍到两只手的腕、肘、肩和髋。趴姿下人体横向占画面，注意留出头部与脚的方向余量",
-        "minBodyHeightRatio": 0.25
+        "hint": "手机放地上或矮凳上（20~40cm 高）斜着拍就行，不用非跟身体同高。侧前方约 45° 最稳。尽量别正对镜头拍 —— 人躺着是朝远处缩的，深度估不准。要拍到两只手的腕、肘、肩和髋。趴姿下人体横向占画面，注意留出头部与脚的方向余量"
       },
 
       "signals": {
@@ -244,7 +237,8 @@
         },
         "bodyLine": {
           "type": "torsoLean",
-          "from": "horizontal"
+          "from": "horizontal",
+          "debugOnly": true
         }
       },
 
@@ -304,8 +298,7 @@
 
       "camera": {
         "view": "side",
-        "hint": "侧拍，手机横放、镜头压低到地面附近。要拍到肩、髋、膝三点。躺姿下人体横向占据画面，注意留出头部与脚的方向余量",
-        "minBodyHeightRatio": 0.25
+        "hint": "侧拍，手机横放、镜头压低到地面附近。要拍到肩、髋、膝三点。躺姿下人体横向占据画面，注意留出头部与脚的方向余量"
       },
 
       "signals": {
@@ -324,7 +317,8 @@
           "type": "jointAngle",
           "chain": [11, 23, 25],
           "side": "min",
-          "space": "world"
+          "space": "world",
+          "debugOnly": true
         }
       },
 
@@ -378,8 +372,7 @@
 
       "camera": {
         "view": "front",
-        "hint": "正对镜头，全身入镜（含抬腿高度）。左右腿交替动作，需要两条腿都可见，不要侧拍",
-        "minBodyHeightRatio": 0.55
+        "hint": "正对镜头，全身入镜（含抬腿高度）。左右腿交替动作，需要两条腿都可见，不要侧拍"
       },
 
       "signals": {
@@ -449,8 +442,7 @@
 
       "camera": {
         "view": "front-or-side",
-        "hint": "正对或侧对，全身入镜。膝角与躯干直立度都要看得清 —— 两条膝、两条踝、两肩、两髋都在画面内最准",
-        "minBodyHeightRatio": 0.5
+        "hint": "正对或侧对，全身入镜。膝角与躯干直立度都要看得清 —— 两条膝、两条踝、两肩、两髋都在画面内最准"
       },
 
       "signals": {
@@ -497,8 +489,7 @@
 
       "camera": {
         "view": "side",
-        "hint": "侧拍，镜头压低到大腿高度，**墙面要入镜**（便于人工确认背是贴着的）。计时起点是「贴上墙且膝角达标」，程序只能验证膝角与躯干直立度，是否真的贴墙请由人确认",
-        "minBodyHeightRatio": 0.5
+        "hint": "侧拍，镜头压低到大腿高度，**墙面要入镜**（便于人工确认背是贴着的）。计时起点是「贴上墙且膝角达标」，程序只能验证膝角与躯干直立度，是否真的贴墙请由人确认"
       },
 
       "signals": {
