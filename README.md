@@ -18,7 +18,14 @@
 
 ## 怎么用
 
-**双击 `启动.bat`** —— 它会自动起本地服务并打开浏览器。关掉那个黑窗口即停止。
+**双击 `启动.bat`** —— 它做三件事：**先收掉上次没关干净的那个服务** → 起本地服务 →
+端口真的通之后再打开浏览器。关掉那个黑窗口即停止。
+
+为什么第一步是"收掉旧的"：`serve.js` 遇到端口被占会**自动顺延到下一个端口**（4322 → 4323），
+于是"上次那个窗口忘了关"看起来像启动成功，实际浏览器打开的可能是跑着旧代码的旧服务 ——
+不报错、也不明显。所以启动前先清，端口才是确定的。
+清理**只杀 node / python 进程**；占用者是别的程序时它一个也不动，而是把 PID 和映像名
+打印出来交给人工判断（这时可以换个端口：`node tools/serve.js --port 4400`）。
 
 首屏是统一入口页：
 
@@ -34,7 +41,9 @@
 > 摄像头 `getUserMedia` 需要安全上下文，`file://` 下 Chrome 直接拒绝。
 > 本地 `http://127.0.0.1` 同时满足这两条，因此必须走服务。
 
-如果 4322 端口被占用，服务会自动往后找（最多试到 4345），启动窗口里有实际地址。
+如果 4322 被**别的程序**占着，`启动.bat` 不会去杀它 —— 它会打印占用者的 PID 与映像名，
+按提示关掉那个程序再启动即可。直接跑 `node tools/serve.js` 时则会自动往后找端口
+（最多试到 4345），实际地址在启动窗口里。
 
 **双击后窗口一闪而过 / 报错**：脚本会停在窗口里并打印原因（缺 Node、`tools\serve.js` 不在等），
 按提示处理后重试即可，不会静默失败。
@@ -570,6 +579,7 @@ docs/
 tools/
   serve.js            本地服务器（零依赖）
   serve.py            Python 后备服务器
+  clean-start.js      启动前清理：收掉上次遗留的服务进程（只动 node/python），端口才是确定的
   fetch-vendor.js     拉取 MediaPipe 运行时与模型
   pw.js               浏览器自检的公共引导（自动探测 playwright 与 Chromium）
   smoke-test.js       M1 自检：引擎链路 14 项
@@ -588,7 +598,7 @@ tools/
   perf-matrix.js      推理耗时矩阵：模型 × 后端（「运行环境要求」那张表就是它测的）
   write-bat.js        生成 启动.bat（CRLF 由代码构造，避免转义层数出错）
   inspect-bat.js      诊断/修复 .bat 换行字节异常（含 --selftest）
-  test-bat.js         实测 启动.bat 能否真正拉起服务
+  test-bat.js         实测 启动.bat：两段 16 项（端口空闲 / 端口上留着旧服务两种情形）
 
 shared/
   offline-guard.js    **普通脚本**，须在 head 最先加载：拦住境外遥测（见「已知约束」）
@@ -687,6 +697,10 @@ vendor/               26.14MB，全离线运行所需 —— **不入库（第�
 node tools/serve.js --port 4322
 node tools/serve.js --port 4322 --no-open
 
+# 启动前清理：收掉上次遗留的服务进程（端口才是确定的）
+node tools/clean-start.js --port 4322
+node tools/clean-start.js --port 4322 --dry-run   # 只报告，不杀
+
 # 拉取 / 更新 MediaPipe 运行时与模型
 node tools/fetch-vendor.js
 node tools/fetch-vendor.js --with-nosimd   # 需要兼容 2021 年前的老浏览器时
@@ -743,7 +757,7 @@ node tools/perf-matrix.js --port 4322 --only full/GPU
 node tools/write-bat.js                  # 重新生成 启动.bat
 node tools/inspect-bat.js                # 体检：换行字节 / 编码 / BOM
 node tools/inspect-bat.js --selftest     # 自测修复逻辑不会破坏路径
-node tools/test-bat.js                   # 真实跑一次 bat，验证服务被拉起
+node tools/test-bat.js                   # 真实跑两次 bat：端口空闲 / 端口留着旧服务（共 16 项）
 ```
 
 等价的 npm 快捷方式（`package.json`，仅自检用得上）：
@@ -778,6 +792,8 @@ npm run test:ui        # 计数页 160 项（需先起服务）
 > `.bat` 对换行字节极敏感，也必须是纯 ASCII、不带 BOM。一旦被写成
 > 「一行里塞满字面量 `\r\n`」，cmd 会把整份脚本当一行解析并直接报错。
 > `write-bat.js` 在写盘前会校验这三点；`inspect-bat.js` 可以体检任意 `.bat`。
+> 改完跑一次 `node tools/test-bat.js` —— 它会真的开两次服务（含"端口上留着旧服务"那一段），
+> 断言最后仍然起在 4322 而不是被悄悄挤到 4323。
 
 ---
 

@@ -27,7 +27,9 @@ const argPort = (() => {
   if (i !== -1 && argv[i + 1]) return parseInt(argv[i + 1], 10);
   return null;
 })();
-const noOpen = argv.indexOf('--no-open') !== -1;
+// --no-open 之外再认一个环境变量：自检要真的跑一次 启动.bat，而 bat 不该带参数，
+// 靠环境变量才能让它别每跑一次测试就弹两个标签页。
+const noOpen = argv.indexOf('--no-open') !== -1 || process.env.SPC_NO_OPEN === '1';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

@@ -15,8 +15,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node tools/serve.js",
+    "start": "node tools/clean-start.js --port 4322 && node tools/serve.js --port 4322",
     "serve": "node tools/serve.js --port 4322",
+    "clean": "node tools/clean-start.js --port 4322",
     "vendor": "node tools/fetch-vendor.js",
     "test:fsm": "node tools/test-fsm.mjs",
     "test:counter": "node tools/test-counter.mjs",
