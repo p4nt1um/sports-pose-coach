@@ -441,6 +441,15 @@ export class PhaseFsm {
       const durationMs = this.lastPhaseAt ? tMs - this.lastPhaseAt : 0;
       const rep = {
         completedAt: tMs,
+        /**
+         * 这一圈**从哪儿开始**（进入起始相位的时刻）。
+         *
+         * 和 durationMs 不是一回事，别拿它当起点：durationMs 只量「末相位 → 起始相位」
+         * 那半程（minRepMs 判的就是这半程），用它回推起点会得到"蹲到底之后"的时刻。
+         * 相似度这类**要看整个动作形状**的用途必须拿到整圈窗口，否则归一化时
+         * 转身点落在窗口边界上，算出来的向量恒为空 —— 而且静默失败，不报错。
+         */
+        startedAt: cycleStartAt || 0,
         durationMs,
         signalMin: this._repMin,
         signalMax: this._repMax,

@@ -107,6 +107,15 @@
         "minRange": 25,
         "refRange": { "min": 70, "max": 175 }
       },
+      "similarity": {
+        "primary": "kneeAngle",
+        "turn": "min",
+        "bins": 8,
+        "minReps": 3,
+        "signals": [
+          { "name": "torsoLean", "weight": 1 }
+        ]
+      },
 
       "fsm": {
         "signal": "kneeAngle",
@@ -272,6 +281,16 @@
         "reps": 3,
         "minRange": 15,
         "refRange": { "min": 100, "max": 150 }
+      },
+      "similarity": {
+        "primary": "elbowAngle",
+        "turn": "min",
+        "bins": 8,
+        "minReps": 3,
+        "signals": [
+          { "name": "torsoTilt", "weight": 1 },
+          { "name": "bodyLine", "weight": 0.8 }
+        ]
       },
 
       "fsm": {

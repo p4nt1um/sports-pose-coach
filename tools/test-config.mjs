@@ -165,8 +165,36 @@ console.log('\n[4] 保持类参数的硬约束（量级不能混）');
     bad.length ? bad.join(' / ') : '两个保持类动作都自洽');
 }
 
-console.log('\n[5] 七个动作都能建出追踪器，且首帧读数为 0');
+console.log('\n[5] 相似度配置（配错的后果是"分数看起来很合理，但完全没用"）');
 {
+  const bad = [];
+  const has = Object.entries(EX).filter(([, ex]) => ex.similarity);
+  for (const [id, ex] of has) {
+    const s = ex.similarity;
+    const names = new Set(Object.keys(ex.signals || {}));
+    if (!names.has(s.primary)) bad.push(id + '：primary ' + s.primary + ' 不存在');
+    if (s.turn !== 'min' && s.turn !== 'max') bad.push(id + '：turn 只能是 min/max，现在是 ' + s.turn);
+    if (!(s.bins >= 2)) bad.push(id + '：bins 至少 2');
+    if (!(s.minReps >= 3)) bad.push(id + '：minReps 至少 3（不然估不出离散度）');
+    if (!Array.isArray(s.signals) || !s.signals.length) bad.push(id + '：signals 为空');
+    for (const sig of s.signals || []) {
+      if (!names.has(sig.name)) bad.push(id + '：特征信号 ' + sig.name + ' 不存在');
+      // ★ 主信号是进度轴，不能同时当特征：它被归一化掉了，加进来差异恒为 0，
+      //   等于给一个空维度分配权重，会悄悄稀释真正有信息的信号。
+      if (sig.name === s.primary) {
+        bad.push(id + '：' + sig.name + ' 同时是 primary 与特征（归一化会剔除它，权重被稀释）');
+      }
+    }
+  }
+  check('相似度配置自洽（primary/turn/特征信号/不含主信号当特征）', bad.length === 0,
+    bad.length ? bad.join(' / ') : has.length + ' 个动作已配（深蹲 / 俯卧撑）');
+
+  // 没配 similarity 的动作在页面上应当"不提供相似度"，而不是报错
+  const others = Object.entries(EX).filter(([, ex]) => !ex.similarity).map(([id]) => id);
+  check('其余动作没有 similarity 段 → 页面按"不提供"处理（不是错误）', others.length > 0, others.join(' / '));
+}
+
+console.log('\n[6] 七个动作都能建出追踪器，且首帧读数为 0');{
   const bad = [];
   for (const [id, ex] of Object.entries(EX)) {
     try {

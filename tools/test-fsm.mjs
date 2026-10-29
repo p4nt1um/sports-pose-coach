@@ -296,6 +296,18 @@ console.log('\n[6] 状态机不变量');
   check('结束后 armed 复位（防下一轮白送计数）', fsm.armed === false, String(fsm.armed));
 }
 
+// startedAt 是给「要看整圈形状」的用途（相似度）准备的。
+// 用它当起点是唯一正确做法：durationMs 只量「末相位 → 起始相位」那半程，
+// 拿它回推起点会得到"蹲到底之后"，归一化时转身点落在窗口边界 → 向量恒为空且不报错。
+{
+  const { fsm } = run(squatSignal({ reps: 3, periodMs: 2000 }));
+  const rep = fsm.lastRep;
+  const whole = rep.completedAt - rep.startedAt;
+  check('★ startedAt 标的是整圈起点（第二个起 ≈ 一个周期），不是末相位起点',
+    rep.startedAt > 0 && Math.abs(whole - 2000) <= 40 && rep.durationMs < whole * 0.7,
+    '整圈 ' + Math.round(whole) + 'ms，durationMs ' + Math.round(rep.durationMs) + 'ms');
+}
+
 console.log('\n[7] 参数鲁棒性：阈值整体挪动 ±10° 仍能数准');
 for (const shift of [-10, 10]) {
   const cfg = JSON.parse(JSON.stringify(CFG));

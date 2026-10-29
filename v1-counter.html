@@ -245,6 +245,14 @@
     </div>
 
     <div class="card">
+      <h3>相似度<span class="tag">和本人比</span></h3>
+      <div class="row" style="gap:6px;margin-bottom:6px">
+        <button class="btn small" id="btnBaseline">建立基线</button>
+      </div>
+      <div class="muted" id="simNote" style="font-size:12px;line-height:1.55"></div>
+    </div>
+
+    <div class="card">
       <h3>运行记录<span class="tag">排查用</span></h3>
       <div class="muted" style="font-size:12px;line-height:1.55;margin-bottom:8px">
         每次「打开摄像头 → 停止」自动留一份：当时的<b>生效参数</b>、画面分辨率、推理耗时、成绩与节奏。
@@ -268,6 +276,11 @@ import {
   ProfileStore, learnProfile, deriveThresholds, applyProfile,
   describeProfile, isProfileUsable, memoryStorage,
 } from './shared/tpc-profile.js';
+// 相似度：和「这个学生自己」比，看趋势（跨学生不可比）
+import {
+  BaselineStore, normalizeRep, buildBaseline, scoreOf,
+  describeBaseline, memoryStorage as simMemoryStorage,
+} from './shared/tpc-similarity.js';
 import { computeLayout, resizeCanvas, drawPoses } from './shared/tpc-draw.js';
 // 与调试台共用同一份存档：老师在那页调好的阈值，这页直接生效
 import { TunedStore } from './shared/tpc-store.js';
@@ -391,6 +404,7 @@ function beginRun() {
   if (!EX) return;
   runRhythm = [];
   inferSamples = [];
+  runSim = [];          // 每次运行单独统计相似度，不跨运行累计
   const rec = store.load(EX.id);
   currentRun = createRun({
     at: Date.now(),
@@ -433,10 +447,14 @@ function endRun(reason) {
     reason: reason || 'stopped',
     reps: runRhythm,
     inferMs: inferStats(),
+    // 相似度汇总：一次运行的平均分/最低/最高。没有基线就是 null，
+    // 不要写成 0 分 —— "没比过"和"比得很差"是两件事。
+    sim: simSummary(),
   });
   currentRun = null;
   runRhythm = [];
   inferSamples = [];
+  runSim = [];
   if (done) {
     runs.push(done);
     saveRuns(runs);
@@ -859,6 +877,178 @@ async function deleteStudentProfile() {
   renderStudentUI();
 }
 
+/* ==================== 相似度：和「这个学生自己」比 ==================== */
+/*
+ * 为什么是"和自己比"：儿童之间关节比例、柔韧度差距太大，绝对标准不可行；
+ * "比上次做得怎么样"才公平，也是体育课真正关心的（不是选拔，是看进步）。
+ *
+ * 代价必须说清：**跨学生不可比**。界面与导出都写明，否则会被当成排名用。
+ *
+ * 与校准（tpc-profile）的分工：
+ *   校准   → 改「算不算一次」的阈值（管计数的松紧）
+ *   相似度 → 不动阈值，只回答「这次动作和他平时像不像」（管形态趋势）
+ * 两者共用同一个"当前学生"，但存两份档案 —— 生命週期不同：阈值改一次能一直用，
+ * 基线会随着水平提高而过时、需要定期重建，混在一起重建基线会连带覆盖阈值。
+ */
+
+let baselineStore;
+try {
+  baselineStore = new BaselineStore(localStorage);
+} catch (e) {
+  baselineStore = new BaselineStore(simMemoryStorage());
+}
+
+/** 采集基线时让学生做几次（比 minReps 多，否则 p50/p90 没有统计意义） */
+const SIM_COLLECT = 5;
+/** 逐帧缓冲上限（30fps × 30s = 900）。取 rep 窗口出来做归一化，不存进运行记录 */
+const FRAME_BUF_MAX = 900;
+
+let simActive = false;        // 正在采集基线
+let simVecs = [];             // 已采到的归一化向量
+let lastSim = null;           // 最近一次的评分 {score, diff, level}
+let frameBuf = [];            // 逐帧 {tMs, values}
+let runSim = [];              // 本次运行的所有评分（结账时汇总进 run.json）
+
+/** rep 结束 → 要么采基线，要么打分 */
+function handleSimRep(rep) {
+  const spec = EX && EX.similarity;
+  if (!spec || !rep || !rep.accepted) return;
+  const end = rep.completedAt;
+  if (typeof end !== 'number') return;
+  // 起点必须用 startedAt（进入起始相位的时刻），**不能用 end − durationMs**：
+  // durationMs 只量末相位回来的那半程，回推出来的是"蹲到底之后"，半个动作
+  // 归一化不出向量（转身点落在窗口边界 → 返回 null），而且完全不报错。
+  // 注意 startedAt 可以是 0（时间轴从 0 起算），所以判据是"是不是数字"而不是"大于 0"。
+  const start = typeof rep.startedAt === 'number'
+    ? rep.startedAt
+    : end - (rep.durationMs || 0);
+  // 只取这次动作窗口内的帧。缓冲区是环形保留的，不能整段拿去归一化 ——
+  // 混进上一次动作的帧会让"转身点"落在上一个动作里，形状完全错位且不报错。
+  const frames = frameBuf.filter((f) => f.tMs >= start && f.tMs <= end);
+  const nv = normalizeRep(frames, spec);
+  if (!nv) return;   // 半个动作 / 遮挡太多：宁可这次不算分，也不给假分
+
+  if (simActive) {
+    simVecs.push(nv);
+    if (simVecs.length >= SIM_COLLECT) finishBaseline();
+    else renderSimNote();
+    return;
+  }
+
+  const b = currentStudent ? baselineStore.get(currentStudent, EX.id) : null;
+  if (!b) return;
+  const sc = scoreOf(nv, b, spec);
+  if (!sc) return;
+  lastSim = sc;
+  runSim.push(sc.score);
+  renderSimNote();
+}
+
+function beginBaseline() {
+  if (!EX) return;
+  if (!EX.similarity) { flash('这个动作还没配相似度'); return; }
+  if (!currentStudent) { flash('先在上面选一个学生（或输入姓名）'); return; }
+  simActive = true;
+  simVecs = [];
+  lastSim = null;
+  el('btnBaseline').textContent = '取消';
+  flash('开始建立基线：让学生完整做 ' + SIM_COLLECT + ' 次，做完自动保存');
+  renderSimNote();
+}
+
+function finishBaseline() {
+  const spec = EX.similarity;
+  simActive = false;
+  el('btnBaseline').textContent = '重建基线';
+  const b = buildBaseline(simVecs, spec);
+  simVecs = [];
+  if (!b || !b.quality.ok) {
+    // 不保存：一份坏基线会让之后所有分数都失去意义，而且看起来"配好了"
+    flash('基线没建立成功：' + ((b && b.quality.reasons[0]) || '动作数据不足') + '（未保存）');
+    renderSimNote(b);
+    return null;
+  }
+  baselineStore.save(currentStudent, EX.id, b);
+  flash('基线已建立：' + describeBaseline(b));
+  renderSimNote();
+  return b;
+}
+
+function cancelBaseline() {
+  simActive = false;
+  simVecs = [];
+  el('btnBaseline').textContent = '建立基线';
+  flash('已取消建立基线');
+  renderSimNote();
+}
+
+function renderSimNote(built) {
+  const host = el('simNote');
+  if (!host || !EX) return;
+  const spec = EX.similarity;
+
+  if (!spec) {
+    host.innerHTML = '这个动作还没配相似度（目前只有深蹲与俯卧撑）。' +
+      '<br><span style="color:#9fb0c0">相似度需要一条明确的"主信号"当进度轴，没配就没法算。</span>';
+    el('btnBaseline').disabled = true;
+    return;
+  }
+  if (simActive) {
+    host.innerHTML = '<span style="color:#fbbf24">正在采集 ' + simVecs.length + ' / ' +
+      SIM_COLLECT + ' 次。让学生完整做 ' + SIM_COLLECT + ' 次动作，做完自动保存。</span>';
+    el('btnBaseline').disabled = false;
+    return;
+  }
+
+  const b = built || (currentStudent ? baselineStore.get(currentStudent, EX.id) : null);
+  const has = b && b.quality && b.quality.ok;
+  el('btnBaseline').disabled = !currentStudent;
+  el('btnBaseline').textContent = has ? '重建基线' : '建立基线';
+
+  if (!currentStudent) {
+    host.innerHTML = '选一个学生后建立基线。<b>相似度只跟同一个人自己的历史比</b>，' +
+      '不能拿来排班级名次。';
+    return;
+  }
+  if (!has) {
+    host.innerHTML = '<b>' + esc(currentStudent) + '</b> 还没有这个动作的基线。' +
+      '点「建立基线」，让他做 ' + SIM_COLLECT + ' 次，之后每次动作都会和这次比。';
+    return;
+  }
+
+  host.innerHTML = '<b>' + esc(currentStudent) + '</b>：' + esc(describeBaseline(b)) +
+    (lastSim
+      ? '<br>最近一次：<b style="color:' + simColor(lastSim.level) + '">' + lastSim.score + '</b> 分'
+      : '') +
+    '<br><span style="color:#9fb0c0">分数只说"这次在你自己历来做的里面算什么水平"，' +
+    '跟别人不可比。</span>';
+}
+
+function simColor(level) {
+  return level === 'good' ? '#34d399' : (level === 'mid' ? '#fbbf24' : '#f87171');
+}
+
+/** 「刚刚这一次」卡里那一行。只在有分时出现，没分就不占位 */
+function simLine() {
+  if (!lastSim) return '';
+  return '和平时比 <b style="color:' + simColor(lastSim.level) + '">' + lastSim.score + '</b> 分';
+}
+
+/** 结账时把本次所有评分汇总（存进 run.json） */
+function simSummary() {
+  if (!runSim.length || !currentStudent) return null;
+  const b = EX && EX.similarity ? baselineStore.get(currentStudent, EX.id) : null;
+  return {
+    studentId: currentStudent,
+    baselineAt: b ? b.createdAt : null,
+    narrow: !!(b && b.quality && b.quality.narrow),
+    n: runSim.length,
+    avg: Math.round(runSim.reduce((a, x) => a + x, 0) / runSim.length),
+    min: Math.min(...runSim),
+    max: Math.max(...runSim),
+  };
+}
+
 /** 真实发声。必须保证回调一定触发 —— onend 在某些浏览器上会漏，所以补一个按字数估的兜底 */
 function realSay(text, done) {  try {
     if (typeof speechSynthesis === 'undefined') { done(); return; }
@@ -973,6 +1163,13 @@ async function loadExercise(id) {
   el('chanRow').innerHTML = '';
   el('qualRow').innerHTML = '';
   renderLooseNote();
+  // 换动作 → 上一次的相似度分数作废（不同动作的分数本来就不可比），
+  // 采集中的基线也作废（把深蹲的形状记到俯卧撑头上是最难查的一类错）
+  lastSim = null;
+  frameBuf = [];
+  runSim = [];
+  if (simActive) { simActive = false; simVecs = []; }
+  renderSimNote();
   el('paramNote').innerHTML = (appliedCustom
     ? '<span class="okline">已套用 ' + appliedCustom + ' 项调试台自定义参数</span><br>' +
       '（' + esc(rec.savedAtText || '') + ' 保存）'
@@ -1095,6 +1292,13 @@ function startUiLoop() {
  */
 function stepFrame(values, confidence, tMs) {
   const hold = modeOf(EX) === 'hold';
+
+  // 逐帧缓冲。相似度要按「这一次动作的窗口」回看整个动作过程（形状是过程量，
+  // 单帧说明不了任何事），所以必须自己留一份。
+  // 只留最近 30 秒：老师的课以分钟计，留全天既不必要也会吃内存。
+  frameBuf.push({ tMs, values: { ...values } });
+  if (frameBuf.length > FRAME_BUF_MAX) frameBuf.shift();
+
   // 注意：snapshot 里的 lastRep / sessions 是对象引用（前后是同一个对象），
   // 必须在这一帧更新之前把**数字**留下来比，否则比较恒为相等，
   // 播报与反馈永远不会触发。
@@ -1130,6 +1334,8 @@ function stepFrame(values, confidence, tMs) {
       if (after.lastRep && after.lastRep.transitions && runRhythm.length < RHYTHM_KEEP) {
         runRhythm.push(after.lastRep.transitions);
       }
+      // 相似度：放在 renderFeedback 之前，界面这一帧就能带上分数
+      handleSimRep(after.lastRep);
       renderFeedback(after);
       const g = guideTextOf(after.lastRep);          // 先算出「该说什么」，与开关无关
       // 判据用「该不该说」而不是「有没有说出去」：否则指导处在冷却期时，
@@ -1346,9 +1552,13 @@ function renderFeedback(s) {
   // 节奏在「有标记」和「动作规范」两种情况下都给 —— 恰恰是被纠正的那一次，
   // 老师才更需要同时看到「哪不对」和「快到什么程度」。
   const rhythm = transitionTextOf(rep);
-  const rhythmLine = rhythm
-    ? '<div class="muted" style="padding:3px 2px 0;opacity:.85">节奏：' + esc(rhythm) + '</div>'
+  const sim = simLine();
+  // 节奏与相似度合成一行尾注：两个都是"这次怎么样"的解释，分两行会把卡片撑太高
+  const tailBits = (rhythm ? ['节奏：' + rhythm] : []).concat(sim ? [sim] : []);
+  const tailLine = tailBits.length
+    ? '<div class="muted" style="padding:3px 2px 0;opacity:.85">' + tailBits.join('　·　') + '</div>'
     : '';
+  const rhythmLine = tailLine;
   if (rep.flags && rep.flags.length) {
     host.innerHTML = rep.flags.map((f) =>
       '<div class="fb' + (f.severity === 'info' ? ' info' : '') + '">' + esc(f.label) +
@@ -1394,6 +1604,10 @@ window.addEventListener('beforeunload', () => { endRun('reloaded'); });
 el('btnZero').addEventListener('click', () => {
   if (tracker && typeof tracker.finalize === 'function') tracker.finalize();
   tracker = newTracker();     // ★ 必须走同一个入口，否则清零会把宽松口径悄悄丢掉
+  // 逐帧缓冲跟着这一组走：清零是「重新开始一组」，上一组的帧不该还能被本次动作
+  // 的窗口框到（合成信号喂帧时时间轴会从头再来，两组的 tMs 会重叠）。
+  frameBuf = [];
+  lastSim = null;
   lastSpokenAt = 0;
   speaker.reset();          // 上一组还没念完的话就此作废，别串到下一组
   renderAll();
@@ -1420,6 +1634,11 @@ el('btnCal').addEventListener('click', () => {
 });
 el('btnCalDel').addEventListener('click', () => {
   deleteStudentProfile().catch((err) => flash('删除失败：' + (err.message || err)));
+});
+
+/* ---------- 相似度 ---------- */
+el('btnBaseline').addEventListener('click', () => {
+  if (simActive) cancelBaseline(); else beginBaseline();
 });
 // 输入名字后直接回车 = 开始校准（老师上课没耐心点两次）
 el('inpStudent').addEventListener('keydown', (e) => {
@@ -1582,6 +1801,28 @@ window.__counter = {
     return pf;
   },
   clearStudents() { profileStore.data = { v: 1, students: {} }; profileStore._save(); currentStudent = ''; saveStudentPref(''); return 0; },
+
+  /* ---------- 相似度（自检与排查用） ---------- */
+
+  get simSupported() { return !!(EX && EX.similarity); },
+  get simNoteText() { return (el('simNote') || {}).textContent || ''; },
+  get simActive() { return simActive; },
+  get simCollected() { return simVecs.length; },
+  get lastSim() { return lastSim; },
+  /** 当前学生在这个动作上的基线 */
+  simBaseline: (exId) => baselineStore.get(currentStudent, exId || (EX && EX.id)),
+  /** 基线描述（界面与自检共用同一句话） */
+  get simBaselineText() {
+    const b = currentStudent && EX ? baselineStore.get(currentStudent, EX.id) : null;
+    return describeBaseline(b);
+  },
+  simStart: () => { beginBaseline(); return { active: simActive }; },
+  simCancel: () => { cancelBaseline(); return { active: simActive }; },
+  clearBaselines: () => {
+    baselineStore.data = { v: 1, students: {} };
+    baselineStore._save();
+    return 0;
+  },
   /** 最近一次动作的向心/离心拆解（自检断言用；纯数据，不含括号里的教学措辞） */
   get lastTransitions() {
     if (!tracker) return null;

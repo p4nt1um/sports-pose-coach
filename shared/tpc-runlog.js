@@ -141,6 +141,11 @@ export function createRun(meta = {}) {
     env: env || null,
     result: null,
     rhythm: null,
+    /**
+     * 相似度汇总（与本人基线比）。放顶层而不塞进 result：它是"和以前比"的语义，
+     * 不是"这次做了多少"的统计，混进 result 会让看报表的人以为是又一个计数。
+     */
+    similarity: null,
   };
 }
 
@@ -159,7 +164,7 @@ export function createRun(meta = {}) {
  * @param {object|null} [close.inferMs] { last, p50, p95 }
  */
 export function closeRun(run, close = {}) {
-  const { at, snapshot = {}, reason = 'stopped', reps = [], inferMs = null } = close;
+  const { at, snapshot = {}, reason = 'stopped', reps = [], inferMs = null, sim = null } = close;
   if (!run) return null;
 
   const endedAt = iso(at);
@@ -189,6 +194,7 @@ export function closeRun(run, close = {}) {
       channels: channels.map((c) => ({ id: c.id, label: c.label, count: num(c.count) })),
     },
     rhythm: summarizeRhythm(reps),
+    similarity: sim || run.similarity || null,
   };
 }
 

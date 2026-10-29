@@ -133,9 +133,64 @@ function holdSegmentsFrames(opts) {
   return out;
 }
 
+/**
+ * 清零 → 喂一段 → 取相似度分。
+ *
+ * 必须先清零：清零会把逐帧缓冲和上一次的分作废。不清的话，两段合成信号的
+ * 时间轴都从 0 开始，环形缓冲里会叠着上一段的帧，回看窗口框到的是两段的混合物。
+ */
+async function scoreFrames(page, frames) {
+  return page.evaluate((f) => {
+    window.__counter.zero();
+    window.__counter.feed(f);
+    return window.__counter.lastSim;
+  }, frames);
+}
+
 /** 读当前动作的信号名列表 */
 async function signalsOf(page) {
   return page.evaluate(() => Object.keys(window.__counter.cfg.signals));
+}
+
+/**
+ * 相似度用的深蹲一圈：膝角与躯干前倾**各走各的**。
+ *
+ * 与 repsFrames 的关键区别：那边所有被驱动信号共用同一条 start→extreme 曲线，
+ * 而相似度关心的恰恰是「两个信号之间的形状关系」—— 必须能分别指定。
+ * `curve` 控制前倾是"一路缓缓俯下去"（1）还是"快到底才俯"（>1 或 <1）：
+ * 这正是"动作形状变了"，也是相似度唯一该有反应的那种变化。
+ *
+ * 注意 depth 变了分数**基本**不该变：分箱是按主信号进度切的，深浅属于
+ * 「算不算一次 / 合不合格」的管辖范围，不是"像不像自己"。不是完全不差 ——
+ * 切窗按阈值穿越点走，幅度不同会挪动穿越点，详见 [B1e] 里那条断言的注释。
+ */
+function simFrames(opts) {
+  const {
+    signalNames, depth = 84, lean = 11, curve = 1, leanAt = 8,
+    periodMs = 2000, fps = 30, preMs = 900, postMs = 700, reps = 1,
+  } = opts;
+  const dt = 1000 / fps;
+  const half = periodMs / 2;
+  const total = preMs + reps * periodMs + postMs;
+  const out = [];
+  for (let n = 0; n * dt <= total; n++) {
+    const t = n * dt;
+    const local = t - preMs;
+    let d = 0;
+    if (local >= 0 && local < reps * periodMs) {
+      const tl = local % periodMs;
+      d = tl < half ? tl / half : (periodMs - tl) / half;
+    }
+    const v = {};
+    const c = {};
+    for (const s of signalNames) { v[s] = null; c[s] = 0; }
+    v.kneeAngle = 172 - depth * d;
+    c.kneeAngle = 1;
+    v.torsoLean = leanAt + lean * Math.pow(d, curve);
+    c.torsoLean = 1;
+    out.push({ t: Math.round(t), v, c });
+  }
+  return out;
 }
 
 /** 在当前动作上跑一段合成信号：先清零，再喂帧 */
@@ -567,6 +622,204 @@ async function stepwise(page, frames) {
   // 收尾：把自己造的状态清干净，别污染后面的用例
   // （这里踩过一次：留下的一份运行记录让 [F1b]「停止后自动留一份」变成 2 份）
   await page.evaluate(() => window.__counter.clearStudents());
+  await page.evaluate(() => window.__counter.clearRuns());
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+
+  /* ============ 相似度（学生自我基线，与校准是两套档案） ============ */
+  console.log('\n[B1e] 相似度：只跟「这个学生自己」比，跨学生不可比');
+
+  await page.evaluate(() => { window.__counter.clearBaselines(); window.__counter.clearStudents(); });
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+
+  const simInit = await page.evaluate(() => ({
+    supported: window.__counter.simSupported,
+    note: window.__counter.simNoteText,
+    disabled: document.getElementById('btnBaseline').disabled,
+  }));
+  check('深蹲配了相似度；没选学生时按钮禁用，并说清「只跟自己比」',
+    simInit.supported === true && simInit.disabled === true &&
+      /选一个学生/.test(simInit.note) && /不能拿来排/.test(simInit.note),
+    '"' + simInit.note.replace(/\s+/g, ' ').slice(0, 56) + '"');
+
+  const noStu = await page.evaluate(() => window.__counter.simStart());
+  check('★ 没选学生就想建基线 → 拒绝（不会把基线记到"无名氏"头上）',
+    noStu.active === false, 'active=' + noStu.active);
+
+  await page.evaluate(() => window.__counter.setStudent('小明'));
+  const simBegun = await page.evaluate(() => {
+    const r = window.__counter.simStart();
+    return {
+      active: r.active,
+      note: window.__counter.simNoteText,
+      label: document.getElementById('btnBaseline').textContent,
+    };
+  });
+  check('开始采集 → 按钮变「取消」，界面写明要做几次',
+    simBegun.active === true && /取消/.test(simBegun.label) && /0 \/ 5/.test(simBegun.note),
+    '"' + simBegun.note.replace(/\s+/g, ' ').slice(0, 40) + '"');
+
+  // 5 次「同一个人、略有出入」的动作 —— 刻意让幅度和前倾曲线都有小差别，
+  // 否则每次一模一样，基线里他自己的抖动就是 0，分数会永远是 100 或 0
+  // （那是夹具造出来的假象，不是算法行为）。
+  const NATURAL = [
+    { depth: 84, lean: 8.0, curve: 0.75 },
+    { depth: 87, lean: 15.0, curve: 1.35 },
+    { depth: 81, lean: 11.0, curve: 1.0 },
+    { depth: 86, lean: 13.0, curve: 1.15 },
+    { depth: 83, lean: 9.5, curve: 0.85 },
+  ];
+  for (const p of NATURAL) {
+    await runFrames(page, simFrames({ signalNames: sqSig, ...p }));
+  }
+
+  const built = await page.evaluate(() => {
+    const b = window.__counter.simBaseline();
+    return {
+      active: window.__counter.simActive,
+      collected: window.__counter.simCollected,
+      b: b ? { reps: b.reps, ok: b.quality.ok, narrow: b.quality.narrow, anchors: b.anchors } : null,
+      note: window.__counter.simNoteText,
+      stored: localStorage.getItem('spc.baselines.v1') || '',
+      profileStored: localStorage.getItem('spc.profiles.v1') || '',
+    };
+  });
+  check('★ 采满 5 次 → 自动收工并建立基线',
+    built.active === false && built.collected === 0 && !!built.b && built.b.ok && built.b.reps === 5,
+    built.b ? 'reps=' + built.b.reps + '，narrow=' + built.b.narrow : '没建起来');
+  check('基线落盘在独立的 key 里（与校准档案分开，重建基线不会连带覆盖阈值）',
+    built.stored.indexOf('小明') !== -1 && built.profileStored.indexOf('小明') === -1,
+    'baselines 含小明=' + (built.stored.indexOf('小明') !== -1) +
+      '，profiles 含小明=' + (built.profileStored.indexOf('小明') !== -1));
+  check('界面写明这份基线是什么（几次、平时差异、0 分线）',
+    /5 次动作/.test(built.note) && /平时差异/.test(built.note) && /0 分线/.test(built.note),
+    '"' + built.note.replace(/\s+/g, ' ').slice(0, 60) + '"');
+
+  // 和模板本身一致的一次动作 → 满分。这是定标的地基：
+  // 100 分 = 完全复制了他平时的样子（实践上很难，但必须可达）
+  const sameFrames = simFrames({ signalNames: sqSig, depth: 84, lean: 11, curve: 1 });
+  const same = await scoreFrames(page, sameFrames);
+  check('★ 和他平时一样 → 高分（100 = 完全复制模板）',
+    !!same && same.score >= 95 && same.level === 'good',
+    same ? same.score + ' 分（diff=' + same.diff + '）' : '没出分');
+
+  const bentFrames = simFrames({ signalNames: sqSig, depth: 84, lean: 11, curve: 2.2 });
+  const bent = await scoreFrames(page, bentFrames);
+  check('★ 形状真的变了（前倾改成"快到底才俯"）→ 分数明显掉下来，不是恒定高分',
+    !!bent && bent.score < 40 && !!same && bent.score < same.score - 40,
+    bent ? bent.score + ' 分（diff=' + bent.diff + '） vs 一样时 ' + (same && same.score) + ' 分' : '没出分');
+
+  const fbText = (await page.evaluate(() => document.getElementById('fbList').textContent))
+    .replace(/\s+/g, ' ');
+  check('反馈卡上直接写出「和平时比 N 分」（不是只把数字存在内存里）',
+    new RegExp('和平时比\\s*' + bent.score + '\\s*分').test(fbText),
+    '"' + fbText.slice(-46) + '"');
+
+  // 深浅不是相似度管的事：分箱按主信号进度切，蹲得浅但形状一样，分数该基本不变。
+  // 两点必须说清：
+  //   ① 必须配合宽松口径才测得到 —— 严格口径下 127° 一次都不算，压根没有分可谈；
+  //   ② 不会**完全**相等。窗口是按阈值穿越点切的，蹲得浅 → 回站立相的穿越点更靠前
+  //      → 取到的那一段动作少了几帧尾部。实测差 9 分（99 → 90），仍在"很像"区间内。
+  //      这是切窗方式的固有耦合，不是形状度量本身的问题，所以锁"不掉档"而不是锁相等。
+  await page.evaluate(() => window.__counter.setLoose(true));
+  const shallow = await page.evaluate((f) => {
+    window.__counter.zero();
+    window.__counter.feed(f);
+    return { sim: window.__counter.lastSim, count: window.__counter.count };
+  }, simFrames({ signalNames: sqSig, depth: 45, lean: 11, curve: 1 }));
+  await page.evaluate(() => window.__counter.setLoose(false));
+  check('蹲得浅不该把分数打下去（深浅归校准/合格率管，这里只看形状）',
+    !!shallow.sim && shallow.count === 1 && shallow.sim.score >= 80 &&
+      !!same && shallow.sim.score >= same.score - 20,
+    '半蹲 ' + shallow.count + ' 次 → ' + (shallow.sim && shallow.sim.score) + ' 分，标准幅度 ' +
+      (same && same.score) + ' 分');
+
+  await page.evaluate(() => window.__counter.setStudent('小红'));
+  const otherStu = await page.evaluate((f) => {
+    window.__counter.zero();
+    window.__counter.feed(f);
+    return { last: window.__counter.lastSim, b: window.__counter.simBaseline(), note: window.__counter.simNoteText };
+  }, sameFrames);
+  check('★ 换到没有基线的学生 → 不出分，也不会偷偷借用别人的基线',
+    otherStu.last === null && otherStu.b === null && /还没有.*基线/.test(otherStu.note),
+    'last=' + JSON.stringify(otherStu.last) + '，' + otherStu.note.replace(/\s+/g, ' ').slice(0, 30));
+
+  await page.evaluate(() => window.__counter.setStudent('小明'));
+  const backSim = await page.evaluate((f) => {
+    window.__counter.zero();
+    window.__counter.feed(f);
+    return { last: window.__counter.lastSim, b: window.__counter.simBaseline() };
+  }, sameFrames);
+  check('切回小明 → 他的基线还在，分数照出',
+    !!backSim.b && !!backSim.last && !!same && backSim.last.score === same.score,
+    backSim.last ? backSim.last.score + ' 分' : '没出分');
+
+  // 运行记录：老师在课上看到的是分数，事后复盘要能说清"和谁的基线比的"
+  await page.evaluate(() => window.__counter.clearRuns());
+  await page.evaluate(() => window.__counter.beginRunNow());
+  await page.evaluate((f) => { window.__counter.zero(); window.__counter.feed(f); }, sameFrames);
+  await page.evaluate((f) => { window.__counter.zero(); window.__counter.feed(f); }, bentFrames);
+  await page.evaluate(() => window.__counter.endRunNow('stopped'));
+  const runSimRec = await page.evaluate(() => window.__counter.runs[0]);
+  check('★ 运行记录带 similarity 段：和谁的基线比、比了几次、均分多少',
+    !!(runSimRec.similarity && runSimRec.similarity.studentId === '小明' &&
+      runSimRec.similarity.n === 2 && typeof runSimRec.similarity.avg === 'number' &&
+      runSimRec.similarity.min <= runSimRec.similarity.avg &&
+      runSimRec.similarity.avg <= runSimRec.similarity.max),
+    JSON.stringify(runSimRec.similarity));
+  check('similarity 不进 result（它是「和以前比」，不是「这次做了多少」）',
+    !!(runSimRec.result && !('similarity' in runSimRec.result)),
+    'result 的键：' + Object.keys(runSimRec.result || {}).join(', '));
+
+  // 换动作：分数作废，基线按动作分开存
+  await page.evaluate(() => window.__counter.setExercise('pushup'));
+  const onPushup = await page.evaluate(() => ({
+    supported: window.__counter.simSupported,
+    last: window.__counter.lastSim,
+    squatB: window.__counter.simBaseline('squat'),
+    pushupB: window.__counter.simBaseline('pushup'),
+  }));
+  check('★ 换动作 → 上一次的分作废；基线按动作分开存（深蹲那份还在，没被顶掉）',
+    onPushup.supported === true && onPushup.last === null &&
+      !!onPushup.squatB && onPushup.pushupB === null,
+    'squat 基线=' + (!!onPushup.squatB) + '，pushup 基线=' + (!!onPushup.pushupB) +
+      '，lastSim=' + JSON.stringify(onPushup.last));
+
+  await page.evaluate(() => window.__counter.setExercise('jumping_jack'));
+  const noSpec = await page.evaluate(() => ({
+    supported: window.__counter.simSupported,
+    note: window.__counter.simNoteText,
+    disabled: document.getElementById('btnBaseline').disabled,
+  }));
+  check('没配相似度的动作 → 按钮禁用，并说明为什么（不是静默不可用）',
+    noSpec.supported === false && noSpec.disabled === true && /还没配相似度/.test(noSpec.note),
+    '"' + noSpec.note.replace(/\s+/g, ' ').slice(0, 40) + '"');
+
+  // 采集中途取消：一次都不能留。半个基线会让之后所有分数都失去意义，
+  // 而且界面上看起来"配好了"。
+  await page.evaluate(() => window.__counter.setExercise('squat'));
+  await page.evaluate(() => { window.__counter.clearBaselines(); window.__counter.setStudent('小明'); });
+  await page.evaluate(() => window.__counter.simStart());
+  await page.evaluate((f) => window.__counter.feed(f), simFrames({ signalNames: sqSig, reps: 2 }));
+  const midCollect = await page.evaluate(() => ({
+    collected: window.__counter.simCollected,
+    active: window.__counter.simActive,
+    b: window.__counter.simBaseline(),
+  }));
+  check('采集中（2 / 5）→ 还不保存，界面显示进度',
+    midCollect.active === true && midCollect.collected === 2 && midCollect.b === null,
+    'collected=' + midCollect.collected + '，baseline=' + JSON.stringify(!!midCollect.b));
+
+  const cancelled = await page.evaluate(() => {
+    const r = window.__counter.simCancel();
+    return { active: r.active, b: window.__counter.simBaseline(), note: window.__counter.simNoteText };
+  });
+  check('★ 采集中途取消 → 一次都不留（半个基线比没有更糟）',
+    cancelled.active === false && cancelled.b === null && /还没有.*基线/.test(cancelled.note),
+    'baseline=' + JSON.stringify(cancelled.b));
+
+  // 收尾：别把造出来的学生/基线/运行记录留给后面的用例
+  // （踩过一次：多留的一份运行记录让 [F1b]「停止后自动留一份」变成 2 份）
+  await page.evaluate(() => { window.__counter.clearBaselines(); window.__counter.clearStudents(); });
   await page.evaluate(() => window.__counter.clearRuns());
   await page.evaluate(() => window.__counter.setExercise('squat'));
 
